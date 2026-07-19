@@ -27,6 +27,10 @@ public sealed class MainForm : Form
     private static readonly Color SelBg = Color.FromArgb(0xCC, 0xE4, 0xF7);   // классическое выделение Windows
     private static readonly Color ToolHover = Color.FromArgb(0xE0, 0xE6, 0xEE);
 
+    // Видимый штамп версии плагина. Увеличивайте при каждом изменении UI — по нему сразу
+    // видно в заголовке окна, свежая DLL загружена или старая.
+    private const string Build = "сборка 5";
+
     private readonly Font _ui = new("Segoe UI", 9f);
     private readonly Font _uiBold = new("Segoe UI", 9f, FontStyle.Bold);
     private readonly Font _h1 = new("Segoe UI", 10.5f, FontStyle.Bold);
@@ -53,7 +57,9 @@ public sealed class MainForm : Form
     public MainForm(PluginContext ctx)
     {
         _ctx = ctx;
-        Text = "RengaHeat — гидравлический расчёт отопления";
+        // Штамп сборки в заголовке — чтобы однозначно проверять, что загружена свежая DLL,
+        // а не старая копия из кэша Renga/другой папки. Меняется с каждым обновлением плагина.
+        Text = $"RengaHeat — гидравлический расчёт отопления · {Build}";
         Width = 1080;
         Height = 720;
         StartPosition = FormStartPosition.CenterScreen;
@@ -97,7 +103,14 @@ public sealed class MainForm : Form
         _nav.IntegralHeight = false;
         foreach (var s in Sections) _nav.Items.Add(s);
         _nav.SelectedIndexChanged += (_, _) => { if (_nav.SelectedItem is string s) ShowSection(s); };
-        root.Controls.Add(Framed(_nav, new Padding(8, 8, 6, 8)), 0, 1);
+        var leftPanel = new Panel { Dock = DockStyle.Fill, BackColor = NavBg };
+        leftPanel.Controls.Add(Framed(_nav, new Padding(8, 0, 6, 8)));
+        leftPanel.Controls.Add(new Label
+        {
+            Text = "Разделы", Dock = DockStyle.Top, Height = 24, Font = _uiBold, ForeColor = TextDark,
+            TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(9, 5, 0, 0), BackColor = NavBg,
+        });
+        root.Controls.Add(leftPanel, 0, 1);
 
         // Контент — та же белая рамка-инсет на сером фоне (область просмотра справа в Renga)
         root.Controls.Add(Framed(_content, new Padding(0, 8, 8, 8)), 1, 1);
