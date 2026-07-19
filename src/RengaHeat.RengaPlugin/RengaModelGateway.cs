@@ -188,6 +188,24 @@ public sealed class RengaModelGateway : IModelGateway
         }
     }
 
+    /// <summary>
+    /// Выделить объект в Renga по устойчивому идентификатору (UniqueIdS) — для перехода из таблиц UI.
+    /// Selection API принимает числовые Id объектов; получаем объект по Guid и берём его Id.
+    /// </summary>
+    public void SelectByUniqueId(string uniqueIdS)
+    {
+        try
+        {
+            if (!Guid.TryParse(uniqueIdS, out var guid)) return;
+            var project = _application.Project;
+            if (project is null) return;
+            var mo = project.Model.GetObjects().GetByUniqueId(guid);
+            if (mo is null) return;
+            _application.Selection.SetSelectedObjects(new[] { mo.Id });
+        }
+        catch { /* переход к объекту не должен ронять UI */ }
+    }
+
     public ApplyReport ApplyChanges(IReadOnlyList<ModelChange> approvedChanges)
     {
         // Режим «только анализ»: запись отключена. Чтобы включить запись результатов в Renga,

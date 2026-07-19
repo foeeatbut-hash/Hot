@@ -115,7 +115,7 @@ public sealed class Plugin : Renga.IPlugin
                 Profile = RequirementsProfile.Novosaratovka(),
                 ReadModel = gateway.ReadModel,
                 ApplyChanges = null,        // режим только анализа: запись отключена
-                SelectInRenga = null,       // переход к объекту подключим после сверки Selection API
+                SelectInRenga = gateway.SelectByUniqueId,   // двойной клик в таблице — выделить объект в Renga
             };
             _window = new MainForm(ctx);
             _window.FormClosed += (_, _) => _window = null;

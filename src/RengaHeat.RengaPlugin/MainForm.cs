@@ -2,6 +2,8 @@ using System.Data;
 using System.Drawing;
 using System.Windows.Forms;
 using RengaHeat.Core.Calculation;
+using RengaHeat.Core.Classification;
+using RengaHeat.Core.Mapping;
 using RengaHeat.Core.Model;
 using RengaHeat.Core.Reporting;
 using RengaHeat.Core.Validation;
@@ -31,8 +33,13 @@ public sealed class MainForm : Form
     private readonly Font _h1 = new("Segoe UI", 13f, FontStyle.Bold);
 
     private readonly PluginContext _ctx;
+    private readonly SessionConfig _config = SessionConfig.Load();
     private HeatingModel? _model;
     private SessionOutcome? _outcome;
+
+    // Распространённые имена свойства тепловой нагрузки — резервная цепочка после выбранного пользователем.
+    private static readonly string[] DefaultLoadNames =
+        { "Q_расч", "Qрасч", "Q", "Тепловая мощность", "Мощность 80/60", "Теплопотери" };
 
     private readonly ListBox _nav = new();
     private readonly Panel _content = new() { Dock = DockStyle.Fill, BackColor = PanelBg };
@@ -246,13 +253,37 @@ public sealed class MainForm : Form
         try
         {
             Cursor = Cursors.WaitCursor;
-            _outcome = _ctx.RunSession(_model);
+            _config.Save();
+            _outcome = BuildSession().Run(_model);
             UpdateStatus();
             _nav.SelectedItem = "Расчёт";
             ShowSection("Расчёт");
         }
         catch (Exception ex) { Msg("Ошибка расчёта: " + ex.Message, MessageBoxIcon.Error); }
         finally { Cursor = Cursors.Default; }
+    }
+
+    /// <summary>Собрать сессию из профиля и пользовательских настроек (роли по типам, свойство нагрузки).</summary>
+    private CalculationSession BuildSession()
+    {
+        var classifier = SessionFactory.DefaultClassifier();
+        foreach (var (typeS, role) in _config.ResolvedTypeRoles())
+            classifier.AddRule(new RoleRule($"Тип Renga → {RoleNames.Of(role)}",
+                new RoleCriteria { RengaTypeId = typeS }, role, priority: 50));
+
+        var names = new List<string>();
+        if (!string.IsNullOrWhiteSpace(_config.LoadPropertyName)) names.Add(_config.LoadPropertyName!);
+        names.AddRange(DefaultLoadNames);
+        var mappings = SessionFactory.DefaultMappings(names);
+
+        return new CalculationSession
+        {
+            Profile = _ctx.Profile,
+            Mappings = mappings,
+            Classifier = classifier,
+            Rules = SessionFactory.RuleEngineFor(_ctx.Profile),
+            Scenario = _ctx.Scenario,
+        };
     }
 
     private Control BuildProfile()
@@ -280,38 +311,122 @@ public sealed class MainForm : Form
 
     private Control BuildClassifier()
     {
-        if (_outcome is null) return Info("Роли определяются при расчёте. Нажмите «Рассчитать» в разделе «Обзор».");
         if (_model is null) return Info("Модель не загружена.");
 
-        var table = new DataTable();
-        table.Columns.Add("Объект");
-        table.Columns.Add("Тип Renga");
-        table.Columns.Add("Роль");
-        table.Columns.Add("Источник роли");
-        table.Columns.Add("ObjectId");
-        foreach (var o in _model.Objects.Values.OrderBy(o => o.Role.Role == ObjectRole.Unknown ? 0 : 1))
-            table.Rows.Add(o.Name, o.RengaTypeId ?? "", RoleNames.Of(o.Role.Role), o.Role.Source.ToString(), o.Id);
+        var roleDisplays = Enum.GetValues<ObjectRole>()
+            .Select(r => r == ObjectRole.Unknown ? "— не назначать —" : RoleNames.Of(r)).ToArray();
+        static string DisplayOf(ObjectRole r) => r == ObjectRole.Unknown ? "— не назначать —" : RoleNames.Of(r);
+        static ObjectRole RoleOfDisplay(string d)
+        {
+            if (d == "— не назначать —") return ObjectRole.Unknown;
+            foreach (var r in Enum.GetValues<ObjectRole>()) if (RoleNames.Of(r) == d) return r;
+            return ObjectRole.Unknown;
+        }
 
-        var unknown = _model.Objects.Values.Count(o => o.Role.Role == ObjectRole.Unknown);
-        return WithGrid($"Не определено ролей: {unknown} из {_model.Objects.Count}. Двойной клик — показать объект в Renga.",
-            table, "ObjectId");
+        var grid = new DataGridView
+        {
+            Dock = DockStyle.Fill, AllowUserToAddRows = false, RowHeadersVisible = false,
+            SelectionMode = DataGridViewSelectionMode.CellSelect,
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, EditMode = DataGridViewEditMode.EditOnEnter,
+        };
+        StyleGrid(grid);
+        var cType = new DataGridViewTextBoxColumn { HeaderText = "Тип объекта Renga (GUID)", ReadOnly = true, FillWeight = 36 };
+        var cSample = new DataGridViewTextBoxColumn { HeaderText = "Пример объекта", ReadOnly = true, FillWeight = 30 };
+        var cCount = new DataGridViewTextBoxColumn { HeaderText = "Кол-во", ReadOnly = true, FillWeight = 10 };
+        var cRole = new DataGridViewComboBoxColumn { HeaderText = "Роль", FlatStyle = FlatStyle.Flat, FillWeight = 24 };
+        cRole.Items.AddRange(roleDisplays);
+        grid.Columns.AddRange(cType, cSample, cCount, cRole);
+
+        foreach (var g in _model.Objects.Values.GroupBy(o => o.RengaTypeId ?? "").OrderByDescending(g => g.Count()))
+        {
+            var role = _config.TypeRoles.TryGetValue(g.Key, out var rn) && Enum.TryParse<ObjectRole>(rn, out var rr)
+                ? rr : ObjectRole.Unknown;
+            grid.Rows.Add(g.Key, g.First().Name, g.Count(), DisplayOf(role));
+        }
+
+        grid.CurrentCellDirtyStateChanged += (_, _) =>
+        {
+            if (grid.IsCurrentCellDirty) grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
+        };
+        grid.CellValueChanged += (_, e) =>
+        {
+            if (e.RowIndex < 0 || grid.Columns[e.ColumnIndex] != cRole) return;
+            var typeS = grid.Rows[e.RowIndex].Cells[0].Value?.ToString() ?? "";
+            var role = RoleOfDisplay(grid.Rows[e.RowIndex].Cells[cRole.Index].Value?.ToString() ?? "");
+            if (role == ObjectRole.Unknown) _config.TypeRoles.Remove(typeS);
+            else _config.TypeRoles[typeS] = role.ToString();
+            _config.Save();
+        };
+
+        var caption = new Label
+        {
+            Text = "Назначьте роль каждому типу объектов Renga (это убирает замечания «роль не определена»). " +
+                   "Выбор сохраняется автоматически и переносится между запусками.",
+            Dock = DockStyle.Fill, ForeColor = TextMuted, Font = _ui, TextAlign = ContentAlignment.MiddleLeft,
+        };
+        var apply = PrimaryButton("Применить и пересчитать");
+        apply.Dock = DockStyle.Fill;
+        apply.Click += (_, _) => RunCalculation();
+
+        return VStack(caption, 44, grid, apply, 48);
     }
 
     private Control BuildMapping()
     {
-        var mappings = SessionFactory.DefaultMappings();
+        if (_model is null) return Info("Модель не загружена.");
+
+        var propNames = _model.Objects.Values.SelectMany(o => o.Properties.Values)
+            .Select(p => p.Name).Where(n => !string.IsNullOrWhiteSpace(n)).Distinct().OrderBy(n => n).ToList();
+
+        const string autoItem = "(авто-поиск по стандартным именам)";
+        var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown, Width = 380, Font = _ui, Margin = new Padding(8, 4, 8, 4) };
+        combo.Items.Add(autoItem);
+        foreach (var n in propNames) combo.Items.Add(n);
+        combo.Text = string.IsNullOrWhiteSpace(_config.LoadPropertyName) ? autoItem : _config.LoadPropertyName!;
+
+        void Store()
+        {
+            var v = combo.Text?.Trim();
+            _config.LoadPropertyName = string.IsNullOrEmpty(v) || v.StartsWith("(авто") ? null : v;
+            _config.Save();
+        }
+        var applyBtn = PrimaryButton("Применить и пересчитать");
+        applyBtn.Width = 220; applyBtn.Margin = new Padding(8, 0, 0, 0);
+        applyBtn.Click += (_, _) => { Store(); RunCalculation(); };
+
+        var controls = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = false, FlowDirection = FlowDirection.LeftToRight };
+        controls.Controls.Add(new Label { Text = "Свойство тепловой нагрузки прибора:", AutoSize = true, Font = _ui, ForeColor = TextDark, Margin = new Padding(0, 8, 0, 0) });
+        controls.Controls.Add(combo);
+        controls.Controls.Add(applyBtn);
+
+        // Справочно: текущие цепочки источников по полям.
         var table = new DataTable();
         table.Columns.Add("Расчётное поле");
         table.Columns.Add("Роли");
         table.Columns.Add("Цепочка источников");
         table.Columns.Add("Единица");
-        foreach (var r in mappings.Rules)
+        foreach (var r in BuildSession().Mappings.Rules)
             table.Rows.Add(r.Field.DisplayName,
                 r.AppliesToRoles.Count == 0 ? "все" : string.Join(", ", r.AppliesToRoles.Select(RoleNames.Of)),
                 string.Join(" → ", r.SourceChain.Select(s => s.Kind)),
                 r.SourceUnitSymbol ?? r.Field.BaseUnitSymbol);
-        return WithGrid("Откуда ядро берёт значения. Если первый источник пуст — берётся следующий по цепочке. " +
-                        "Выбор конкретных свойств вашей модели — в следующей версии.", table, null);
+
+        return VStack(controls, 48, MakeGrid(table, null), null, 0);
+    }
+
+    /// <summary>Вертикальная раскладка: верх (фикс. высота) / центр (тянется) / низ (фикс., может быть null).</summary>
+    private static Control VStack(Control top, int topH, Control fill, Control? bottom, int bottomH)
+    {
+        var t = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = PanelBg };
+        t.RowStyles.Add(new RowStyle(SizeType.Absolute, topH));
+        t.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        t.RowStyles.Add(new RowStyle(SizeType.Absolute, bottom is null ? 0 : bottomH));
+        top.Dock = DockStyle.Fill;
+        fill.Dock = DockStyle.Fill;
+        t.Controls.Add(top, 0, 0);
+        t.Controls.Add(fill, 0, 1);
+        if (bottom is not null) { bottom.Dock = DockStyle.Fill; t.Controls.Add(bottom, 0, 2); }
+        return t;
     }
 
     private Control BuildValidation()
@@ -423,7 +538,7 @@ public sealed class MainForm : Form
                 ch.NewValue?.ToString() ?? "—", ch.Reason);
 
         var apply = PrimaryButton("Применить отмеченные (с поддержкой Undo)");
-        apply.Dock = DockStyle.Bottom;
+        apply.Width = 320;
         apply.Click += (_, _) =>
         {
             if (_ctx.ApplyChanges is null) { Msg("Применение недоступно: включён режим только анализа."); return; }
@@ -434,10 +549,13 @@ public sealed class MainForm : Form
             Msg(_ctx.ApplyChanges(approved));
         };
 
-        var host = new Panel { Dock = DockStyle.Fill };
-        host.Controls.Add(grid);
-        host.Controls.Add(apply);
-        return host;
+        var caption = new Label
+        {
+            Text = "Отметьте изменения и нажмите «Применить». Ничего не применяется без подтверждения; " +
+                   "изменения выполняются одной операцией с поддержкой отмены (Undo).",
+            Dock = DockStyle.Fill, ForeColor = TextMuted, Font = _ui, TextAlign = ContentAlignment.MiddleLeft,
+        };
+        return VStack(caption, 44, grid, apply, 48);
     }
 
     private Control BuildReports()
