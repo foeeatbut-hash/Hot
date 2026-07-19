@@ -20,7 +20,10 @@
   -->
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <!-- net8.0-windows + WinForms: окно плагина (WinForms) требует Windows-таргета.
+         Renga загружает Net8-плагин, а Windows Desktop Runtime 8 на машине присутствует. -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Platforms>x64</Platforms>

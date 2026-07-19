@@ -85,47 +85,35 @@ public sealed class Plugin : Renga.IPlugin
             if (!_application.HasProject())
             {
                 _application.UI.ShowMessageBox(Renga.MessageIcon.MessageIcon_Warning, "RengaHeat",
-                    "Откройте проект Renga с системой отопления перед запуском расчёта.");
+                    "Откройте проект Renga с системой отопления перед запуском плагина.");
                 return;
             }
+
+            // Открываем окно-хаб. Модель читается внутри формы (по кнопке в «Обзоре» запускается расчёт),
+            // ничего не считаем и не меняем автоматически. Форма зависит только от ядра и делегатов.
             var gateway = new RengaModelGateway(_application);
-            var model = gateway.ReadModel();
-
-            // Профиль по умолчанию — ЧТУ Новосаратовки; в UI плагина он выбирается/редактируется.
-            var session = SessionFactory.CreateSession(RequirementsProfile.Novosaratovka());
-            var outcome = session.Run(model);
-
-            // По умолчанию — режим «только анализ»: показываем отчёт и предпросмотр,
-            // ничего не применяя. Применение — отдельная подтверждаемая команда.
-            var report = Reports.SessionReport(outcome);
-            ShowReport(report, outcome);
+            var ctx = new PluginContext
+            {
+                Profile = RequirementsProfile.Novosaratovka(),
+                ReadModel = gateway.ReadModel,
+                ApplyChanges = null,        // режим только анализа: запись отключена
+                SelectInRenga = null,       // переход к объекту подключим после сверки Selection API
+            };
+            using var form = new MainForm(ctx);
+            form.ShowDialog();
         }
         catch (Exception ex)
         {
-            // Пишем ПОЛНЫЙ стек в лог, чтобы видеть точное место сбоя, а не только текст.
-            Log("ОШИБКА расчёта RengaHeat:\r\n" + ex);
+            Log("ОШИБКА RengaHeat:\r\n" + ex);
             try
             {
                 _application.UI.ShowMessageBox(Renga.MessageIcon.MessageIcon_Error, "RengaHeat",
-                    "Ошибка расчёта: " + ex.Message +
+                    "Ошибка: " + ex.Message +
                     "\r\n\r\nПодробности (стек вызовов) записаны в файл RengaHeat_init.log " +
                     "во временной папке (%TEMP%).");
             }
             catch { /* не даём вторичному сбою UI перекрыть исходную ошибку */ }
         }
-    }
-
-    private void ShowReport(string report, SessionOutcome outcome)
-    {
-        // Здесь открывается диалог плагина с вкладками (см. раздел «Интерфейс» в README):
-        // проверка модели, расчёт, балансировка, предпросмотр изменений, отчёты/экспорт.
-        // Диалог WPF/WinForms реализуется отдельно; ядро уже отдаёт все данные:
-        //   outcome.ModelFindings, outcome.Results, outcome.PreviewChanges, outcome.ValueJournal.
-        _application?.UI.ShowMessageBox(
-            Renga.MessageIcon.MessageIcon_Info,
-            "RengaHeat — результат",
-            $"{(outcome.IsReady ? "Готово" : "Есть замечания")}. " +
-            $"Замечаний: {outcome.AllFindings.Count()}, изменений в предпросмотре: {outcome.PreviewChanges.Changes.Count}.");
     }
 }
 
