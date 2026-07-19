@@ -88,7 +88,7 @@ public sealed class MainForm : Form
         root.Controls.Add(toolbar, 0, 0);
         root.SetColumnSpan(toolbar, 2);
 
-        // Навигация — нативный список (белый фон, стандартное синее выделение)
+        // Навигация — нативный список в белой рамке-инсете (как список стилей в диалогах Renga)
         _nav.Dock = DockStyle.Fill;
         _nav.BorderStyle = BorderStyle.None;
         _nav.BackColor = PanelBg;
@@ -97,12 +97,10 @@ public sealed class MainForm : Form
         _nav.IntegralHeight = false;
         foreach (var s in Sections) _nav.Items.Add(s);
         _nav.SelectedIndexChanged += (_, _) => { if (_nav.SelectedItem is string s) ShowSection(s); };
-        var navHost = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg };
-        navHost.Paint += (_, e) => e.Graphics.DrawLine(new Pen(BorderColor), navHost.Width - 1, 0, navHost.Width - 1, navHost.Height);
-        navHost.Controls.Add(_nav);
-        root.Controls.Add(navHost, 0, 1);
+        root.Controls.Add(Framed(_nav, new Padding(8, 8, 6, 8)), 0, 1);
 
-        root.Controls.Add(_content, 1, 1);
+        // Контент — та же белая рамка-инсет на сером фоне (область просмотра справа в Renga)
+        root.Controls.Add(Framed(_content, new Padding(0, 8, 8, 8)), 1, 1);
 
         // Нижняя панель: статус слева, кнопка «Закрыть» справа (как OK/Отмена в Renga)
         var bottom = new Panel { Dock = DockStyle.Fill, BackColor = NavBg };
@@ -119,6 +117,18 @@ public sealed class MainForm : Form
         root.SetColumnSpan(bottom, 2);
 
         Controls.Add(root);
+    }
+
+    /// <summary>Обернуть контрол в белую панель с тонкой серой рамкой на сером фоне (инсет Renga).</summary>
+    private static Panel Framed(Control inner, Padding outerMargin)
+    {
+        inner.Dock = DockStyle.Fill;
+        var box = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg, Padding = new Padding(1) };
+        box.Paint += (_, e) => e.Graphics.DrawRectangle(new Pen(BorderColor), 0, 0, box.Width - 1, box.Height - 1);
+        box.Controls.Add(inner);
+        var host = new Panel { Dock = DockStyle.Fill, BackColor = NavBg, Padding = outerMargin };
+        host.Controls.Add(box);
+        return host;
     }
 
     private Button ToolButton(string text)
