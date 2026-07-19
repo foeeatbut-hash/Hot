@@ -70,8 +70,12 @@ public sealed class ModelValidator(RequirementsProfile profile)
     {
         if (topology.Sources.Count == 0)
             findings.Add(new Finding(FindingStatus.NeedsDecision, "SRC-001",
-                "Источник тепла (ИТП) не найден в модели. Назначьте роль «Источник тепла» " +
-                "или выберите временный источник для расчёта с допущениями."));
+                "Источник тепла (ИТП) не найден, и нет открытого конца сети для присоединения. " +
+                "Назначьте роль «Источник тепла» или выберите временный источник."));
+        else if (topology.ItpBoundaryAssumed)
+            findings.Add(new Finding(FindingStatus.Assumption, "SRC-003",
+                "ИТП не смоделирован: принят открытый конец магистрали как граница расчёта (допущение). " +
+                "Проверьте точку присоединения в разделе «Подсветка»."));
         else if (topology.Sources.Count > 1)
             findings.Add(new Finding(FindingStatus.Assumption, "SRC-002",
                 $"Несколько источников ({topology.Sources.Count}). Каждая зона рассчитывается от своего источника; " +

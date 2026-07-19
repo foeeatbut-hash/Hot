@@ -31,6 +31,9 @@ public sealed class SessionConfig
     /// <summary>Имя расчётного сценария (Базовый/Экономичный/Тихий). Пусто — базовый.</summary>
     public string? ScenarioName { get; set; }
 
+    /// <summary>Выбранные уровни (этажи) для расчёта. Пусто — учитываются все уровни.</summary>
+    public List<string> SelectedLevels { get; set; } = new();
+
     public static string DefaultPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RengaHeat", "config.json");
 

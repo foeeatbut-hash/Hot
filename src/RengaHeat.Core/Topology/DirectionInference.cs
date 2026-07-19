@@ -37,6 +37,18 @@ public sealed class TopologyAnalysis
     public List<IReadOnlySet<string>> Fragments { get; } = new();
     public List<string> Notes { get; } = new();
 
+    /// <summary>Открытые концы сети: несущие объекты со свободным (несоединённым) портом.</summary>
+    public List<NetworkObject> OpenEnds { get; } = new();
+
+    /// <summary>
+    /// Точки присоединения к ИТП: открытые концы наибольшего диаметра, где магистраль «выходит»
+    /// из модели. ИТП может быть не смоделирован — тогда это граница расчёта.
+    /// </summary>
+    public List<NetworkObject> ItpConnections { get; } = new();
+
+    /// <summary>ИТП не смоделирован и вместо источника принят открытый конец (граница) — допущение.</summary>
+    public bool ItpBoundaryAssumed { get; set; }
+
     public SideAssignment SideOf(string objectId) => Sides.GetValueOrDefault(objectId, SideAssignment.Unknown);
 
     public bool HasCriticalAmbiguity =>
@@ -88,8 +100,22 @@ public sealed class DirectionInference
             analysis.Sources.Add(temp);
             analysis.Notes.Add($"Использован временный источник «{temp.Name}» (допущение инженера).");
         }
+
+        // Открытые концы и присоединения к ИТП (где магистраль обрывается — граница с ИТП)
+        DetectOpenEndsAndItp(model, analysis);
+
+        // ИТП не смоделирован: принимаем присоединение (открытый конец наибольшего DN) как границу,
+        // чтобы фрагмент считался. Это допущение, а не физический источник в модели.
+        if (analysis.Sources.Count == 0 && analysis.ItpConnections.Count > 0)
+        {
+            var boundary = analysis.ItpConnections[0];
+            analysis.Sources.Add(boundary);
+            analysis.ItpBoundaryAssumed = true;
+            analysis.Notes.Add($"ИТП не смоделирован: узел присоединения «{boundary.Name}» " +
+                               $"(открытый конец Ду{boundary.MaxDn}) принят как граница расчёта.");
+        }
         if (analysis.Sources.Count == 0)
-            analysis.Notes.Add("Источник тепла не найден: расчёт возможен только с временным источником.");
+            analysis.Notes.Add("Источник тепла и присоединение к ИТП не найдены: расчёт возможен только с временным источником.");
         if (analysis.Sources.Count > 1)
             analysis.Notes.Add($"Найдено несколько источников ({analysis.Sources.Count}): каждый фрагмент/зона рассчитывается от своего источника.");
 
@@ -103,6 +129,30 @@ public sealed class DirectionInference
         PropagateSidesTopologically(model, graph, analysis);
 
         return analysis;
+    }
+
+    private static bool IsCarrier(NetworkObject o) =>
+        !IsDevice(o) && o.Role.Role is not ObjectRole.HeatSource;
+
+    /// <summary>
+    /// Открытые концы: несущие объекты со свободным портом (сеть там обрывается). Присоединения к
+    /// ИТП — открытые концы наибольшего DN (магистральный «выход» из модели). Если DN нигде не задан,
+    /// кандидатами считаются все открытые концы. Логика топологическая — координаты не нужны.
+    /// </summary>
+    private static void DetectOpenEndsAndItp(HeatingModel model, TopologyAnalysis analysis)
+    {
+        var openEnds = model.Objects.Values
+            .Where(o => !o.ExcludedFromCalculation && o.HasFreePort && IsCarrier(o))
+            .ToList();
+        analysis.OpenEnds.AddRange(openEnds);
+        if (openEnds.Count == 0) return;
+
+        var maxDn = openEnds.Max(o => o.MaxDn);
+        var itp = maxDn > 0
+            ? openEnds.Where(o => o.MaxDn == maxDn).ToList()   // магистральные концы наибольшего DN
+            : openEnds;                                        // DN неизвестен — все концы кандидаты
+        analysis.ItpConnections.AddRange(itp);
+        analysis.Notes.Add($"Открытых концов сети: {openEnds.Count}; присоединений к ИТП (Ду{maxDn}): {itp.Count}.");
     }
 
     private SideAssignment InferSide(NetworkObject obj, TopologyAnalysis analysis)

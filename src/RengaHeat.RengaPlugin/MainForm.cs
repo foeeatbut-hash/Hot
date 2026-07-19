@@ -7,6 +7,7 @@ using RengaHeat.Core.Mapping;
 using RengaHeat.Core.Model;
 using RengaHeat.Core.Profiles;
 using RengaHeat.Core.Reporting;
+using RengaHeat.Core.Topology;
 using RengaHeat.Core.Validation;
 
 namespace RengaHeat.RengaPlugin;
@@ -30,7 +31,7 @@ public sealed class MainForm : Form
 
     // Видимый штамп версии плагина. Увеличивайте при каждом изменении UI — по нему сразу
     // видно в заголовке окна, свежая DLL загружена или старая.
-    private const string Build = "сборка 8";
+    private const string Build = "сборка 9";
 
     private readonly Font _ui = new("Segoe UI", 9f);
     private readonly Font _uiBold = new("Segoe UI", 9f, FontStyle.Bold);
@@ -55,8 +56,8 @@ public sealed class MainForm : Form
 
     private static readonly string[] Sections =
     {
-        "Обзор", "Исходные", "Классификатор", "Сопоставление",
-        "Проверка модели", "Расчёт", "Балансировка", "Предпросмотр изменений", "Отчёты и экспорт",
+        "Обзор", "Исходные", "Уровни", "Классификатор", "Сопоставление",
+        "Проверка модели", "Расчёт", "Балансировка", "Подсветка", "Предпросмотр изменений", "Отчёты и экспорт",
     };
 
     public MainForm(PluginContext ctx)
@@ -85,17 +86,22 @@ public sealed class MainForm : Form
     /// </summary>
     private void AutoCalculate()
     {
-        if (_model is null || _model.Objects.Count is 0 or > 20000) return;
+        var work = WorkingModel();
+        if (work is null || work.Objects.Count is 0 or > 20000) return;
         try
         {
             Cursor = Cursors.WaitCursor;
-            _outcome = BuildSession().Run(_model);
+            _outcome = BuildSession().Run(work);
             UpdateStatus();
         }
         catch { /* авто-расчёт не критичен: инженер запустит вручную кнопкой «Рассчитать» */ }
         finally { Cursor = Cursors.Default; }
         if (_nav.SelectedItem is string s) ShowSection(s);
     }
+
+    /// <summary>Рабочая модель: исходная, отфильтрованная по выбранным уровням (раздел «Уровни»).</summary>
+    private HeatingModel? WorkingModel() =>
+        _model?.FilterByLevels(new HashSet<string>(_config.SelectedLevels));
 
     private void BuildLayout()
     {
@@ -216,7 +222,9 @@ public sealed class MainForm : Form
     {
         var p = EffectiveProfile();
         var over = _config.Overrides.Any ? " (изменён)" : "";
-        var model = _model is null ? "модель не загружена" : $"объектов: {_model.Objects.Count}, связей: {_model.Connections.Count}";
+        var work = WorkingModel();
+        var lvl = _config.SelectedLevels.Count > 0 ? $" · уровней: {_config.SelectedLevels.Count}" : "";
+        var model = work is null ? "модель не загружена" : $"объектов: {work.Objects.Count}, связей: {work.Connections.Count}{lvl}";
         var ready = _outcome is null ? "расчёт не выполнялся"
             : (_outcome.IsReady ? "✓ готово" : "⚠ есть замечания");
         _status.Text = $"Профиль: {p.Name}{over} · график {p.HeatingSchedule}     |     {model}     |     {ready}";
@@ -229,11 +237,13 @@ public sealed class MainForm : Form
         {
             "Обзор" => BuildOverview(),
             "Исходные" => BuildInputs(),
+            "Уровни" => BuildLevels(),
             "Классификатор" => BuildClassifier(),
             "Сопоставление" => BuildMapping(),
             "Проверка модели" => BuildValidation(),
             "Расчёт" => BuildCalculation(),
             "Балансировка" => BuildBalancing(),
+            "Подсветка" => BuildHighlight(),
             "Предпросмотр изменений" => BuildPreview(),
             "Отчёты и экспорт" => BuildReports(),
             _ => Info("Раздел в разработке."),
@@ -305,12 +315,13 @@ public sealed class MainForm : Form
 
     private void RunCalculation()
     {
-        if (_model is null) { Msg("Модель не загружена."); return; }
+        var work = WorkingModel();
+        if (work is null) { Msg("Модель не загружена."); return; }
         try
         {
             Cursor = Cursors.WaitCursor;
             _config.Save();
-            _outcome = BuildSession().Run(_model);
+            _outcome = BuildSession().Run(work);
             UpdateStatus();
             _nav.SelectedItem = "Расчёт";
             ShowSection("Расчёт");
@@ -486,6 +497,88 @@ public sealed class MainForm : Form
         buttons.Controls.Add(reset);
 
         return VStack(header, 40, grid, buttons, 44);
+    }
+
+    private Control BuildLevels()
+    {
+        if (_model is null) return Info("Модель не загружена.");
+        var summary = _model.LevelSummary();
+        if (summary.Count == 1 && summary[0].Level == HeatingModel.NoLevel)
+            return Info("Уровни из модели не считаны (все объекты без уровня) — расчёт учитывает все объекты. " +
+                        "Если в проекте есть этажи, пришлите %TEMP%\\RengaHeat_types.log.");
+
+        var levels = summary.Select(s => s.Level).ToList();
+        var list = new CheckedListBox
+        {
+            Dock = DockStyle.Fill, BorderStyle = BorderStyle.None, Font = _ui, CheckOnClick = true, BackColor = PanelBg,
+        };
+        var selectedEmpty = _config.SelectedLevels.Count == 0;
+        foreach (var (level, count) in summary)
+            list.Items.Add($"{level}   ({count})", selectedEmpty || _config.SelectedLevels.Contains(level));
+
+        void Store()
+        {
+            var chosen = new List<string>();
+            for (var i = 0; i < list.Items.Count; i++)
+                if (list.GetItemChecked(i)) chosen.Add(levels[i]);
+            // Все отмечены — это «все уровни» (пустой список = фильтр выключен).
+            _config.SelectedLevels = chosen.Count == levels.Count ? new List<string>() : chosen;
+            _config.Save();
+        }
+        // ItemCheck срабатывает до применения галочки — читаем состояние после (BeginInvoke).
+        list.ItemCheck += (_, _) => BeginInvoke(new Action(Store));
+
+        var caption = new Label
+        {
+            Text = "Отметьте уровни для расчёта (по умолчанию — все). Объекты без уровня включаются всегда.",
+            Dock = DockStyle.Fill, ForeColor = TextMuted, Font = _ui, TextAlign = ContentAlignment.MiddleLeft,
+        };
+        var apply = PrimaryButton("Применить и пересчитать");
+        apply.Dock = DockStyle.Fill;
+        apply.Click += (_, _) => RunCalculation();
+        return VStack(caption, 30, Framed(list, new Padding(0)), apply, 48);
+    }
+
+    private Control BuildHighlight()
+    {
+        if (_ctx.SelectManyInRenga is null) return Info("Подсветка доступна только внутри Renga.");
+        if (_outcome is null) return Info("Сначала выполните расчёт — затем можно подсветить объекты в модели.");
+        var work = WorkingModel();
+        if (work is null) return Info("Модель не загружена.");
+
+        var topo = _outcome.Topology;
+        List<string> BySide(NetworkSide side) =>
+            topo.Sides.Where(kv => kv.Value.Side == side).Select(kv => kv.Key).ToList();
+        List<string> ByRoles(params ObjectRole[] roles) =>
+            work.Objects.Values.Where(o => roles.Contains(o.Role.Role)).Select(o => o.Id).ToList();
+
+        var groups = new (string Name, List<string> Ids)[]
+        {
+            ("Подача", BySide(NetworkSide.Supply)),
+            ("Обратка", BySide(NetworkSide.Return)),
+            ("Приборы (радиаторы/конвекторы)", ByRoles(ObjectRole.Radiator, ObjectRole.Convector, ObjectRole.TowelRail, ObjectRole.AirHeater)),
+            ("Коллекторы", ByRoles(ObjectRole.SupplyManifold, ObjectRole.ReturnManifold)),
+            ("Стояки", ByRoles(ObjectRole.Riser)),
+            ("Магистрали", ByRoles(ObjectRole.SupplyMain, ObjectRole.ReturnMain)),
+            ("Арматура", ByRoles(ObjectRole.BalancingValve, ObjectRole.ThermostaticValve, ObjectRole.ShutoffValve,
+                ObjectRole.DifferentialPressureRegulator, ObjectRole.Strainer, ObjectRole.HeatMeter)),
+            ("Присоединения к ИТП", topo.ItpConnections.Select(o => o.Id).ToList()),
+            ("Критическое кольцо", _outcome.Results.Select(r => r.CriticalRingDeviceId)
+                .Where(id => id is not null).Cast<string>().Distinct().ToList()),
+        };
+
+        var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
+        panel.Controls.Add(Info("Нажмите «Показать» — объекты выделятся в модели Renga (одна группа за раз)."));
+        foreach (var (name, ids) in groups)
+        {
+            var btn = SecondaryButton($"Показать: {name}  ({ids.Count})");
+            btn.Width = 440; btn.TextAlign = ContentAlignment.MiddleLeft; btn.Margin = new Padding(0, 0, 0, 6);
+            btn.Enabled = ids.Count > 0;
+            var captured = ids;
+            btn.Click += (_, _) => _ctx.SelectManyInRenga!(captured);
+            panel.Controls.Add(btn);
+        }
+        return panel;
     }
 
     private Control BuildClassifier()

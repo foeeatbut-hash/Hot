@@ -49,14 +49,15 @@ public class ValidationTests
     }
 
     [Fact]
-    public void MissingSource_ProducesNeedsDecision()
+    public void MissingSource_WithOpenEnd_ProducesItpBoundaryAssumption()
     {
         var b = new RengaHeat.Core.Model.ModelBuilder();
         var supply = b.AddPipe("Подача", RengaHeat.Core.Model.ObjectRole.SupplyMain);
         var rad = b.AddRadiator("Радиатор", 1000, new RengaHeat.Core.Model.BuildingContext(Apartment: "кв.1"));
         b.Connect(supply, 1, rad, 0);
+        // Открытый конец supply.p0 → принимается как граница ИТП (допущение SRC-003), а не жёсткое SRC-001.
         var findings = Validate(b.Model);
-        Assert.Contains(findings, f => f.Code == "SRC-001" && f.Status == FindingStatus.NeedsDecision);
+        Assert.Contains(findings, f => f.Code == "SRC-003" && f.Status == FindingStatus.Assumption);
     }
 
     [Fact]

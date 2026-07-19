@@ -47,6 +47,16 @@ public sealed class NetworkObject
     public BuildingContext Context { get; set; } = new();
     public List<Port> Ports { get; } = new();
 
+    /// <summary>Имя уровня (этажа) Renga, на котором размещён объект (для фильтра по уровням).</summary>
+    public string? LevelName { get; set; }
+    /// <summary>Идентификатор уровня Renga (числовой Id объекта-уровня).</summary>
+    public int? LevelId { get; set; }
+
+    /// <summary>Признак открытого конца: у объекта есть свободный (несоединённый) порт.</summary>
+    public bool HasFreePort => Ports.Any(p => !p.IsConnected);
+    /// <summary>Наибольший DN среди портов объекта (для ранжирования магистралей/присоединений).</summary>
+    public int MaxDn => Ports.Select(p => p.Dn ?? 0).DefaultIfEmpty(0).Max();
+
     /// <summary>Свойства экземпляра по устойчивому идентификатору.</summary>
     public Dictionary<Guid, PropertyValue> Properties { get; } = new();
 
@@ -90,6 +100,35 @@ public sealed class HeatingModel
 
     public IEnumerable<NetworkObject> WithRole(ObjectRole role) =>
         Objects.Values.Where(o => o.Role.Role == role && !o.ExcludedFromCalculation);
+
+    /// <summary>Сводка по уровням: имя уровня → число объектов (для раздела «Уровни»).</summary>
+    public IReadOnlyList<(string Level, int Count)> LevelSummary() =>
+        Objects.Values
+            .GroupBy(o => o.LevelName ?? NoLevel)
+            .Select(g => (g.Key, g.Count()))
+            .OrderBy(x => x.Key, StringComparer.CurrentCulture)
+            .ToList();
+
+    /// <summary>Метка объектов без уровня (общие/сквозные — всегда включаются в расчёт).</summary>
+    public const string NoLevel = "(без уровня)";
+
+    /// <summary>
+    /// Подмодель по выбранным уровням: сохраняет объекты выбранных уровней и объекты без уровня
+    /// (магистрали/стояки, сквозные для этажей — иначе рвётся связность), плюс соединения между ними.
+    /// Пустой набор — вернуть исходную модель (фильтр выключен). Объекты переиспользуются по ссылке.
+    /// </summary>
+    public HeatingModel FilterByLevels(IReadOnlySet<string> selectedLevels)
+    {
+        if (selectedLevels.Count == 0) return this;
+        var m = new HeatingModel { Name = Name };
+        foreach (var o in Objects.Values)
+            if (o.LevelName is null || selectedLevels.Contains(o.LevelName))
+                m.Objects[o.Id] = o;
+        foreach (var c in Connections)
+            if (m.Objects.ContainsKey(c.ObjectAId) && m.Objects.ContainsKey(c.ObjectBId))
+                m.Connections.Add(c);
+        return m;
+    }
 
     /// <summary>Соединить два объекта по указанным портам, обновив данные портов с обеих сторон.</summary>
     public void Connect(NetworkObject a, string portA, NetworkObject b, string portB)

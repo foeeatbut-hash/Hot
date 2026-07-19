@@ -116,6 +116,7 @@ public sealed class Plugin : Renga.IPlugin
                 ReadModel = gateway.ReadModel,
                 ApplyChanges = null,        // режим только анализа: запись отключена
                 SelectInRenga = gateway.SelectByUniqueId,   // двойной клик в таблице — выделить объект в Renga
+                SelectManyInRenga = gateway.SelectManyByUniqueId,   // подсветка группы объектов по роли/стороне
             };
             _window = new MainForm(ctx);
             _window.FormClosed += (_, _) => _window = null;

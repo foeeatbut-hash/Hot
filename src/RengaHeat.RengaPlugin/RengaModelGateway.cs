@@ -79,6 +79,21 @@ public sealed class RengaModelGateway : IModelGateway
 
         var rengaModel = project.Model;
         var objects = rengaModel.GetObjects();
+
+        // Пред-скан уровней (этажей): объект-уровень определяем по интерфейсу ILevel (без завязки
+        // на конкретный тип), имя берём из объекта. Карта: Id уровня → имя — для фильтра по уровням.
+        var levelNames = new Dictionary<int, string>();
+        for (var i = 0; i < objects.Count; i++)
+        {
+            try
+            {
+                var mo = objects.GetByIndex(i);
+                if (mo is not null && mo.GetInterfaceByName("ILevel") != null)
+                    levelNames[mo.Id] = string.IsNullOrWhiteSpace(mo.Name) ? $"Уровень {mo.Id}" : mo.Name;
+            }
+            catch { /* объект-уровень нечитаем — пропускаем */ }
+        }
+
         // Диагностика: распределение типов (всего/распознано инженерными/пример) — пишется в лог,
         // чтобы при пустом результате сразу видеть реальные GUID-типы модели.
         var tally = new Dictionary<Guid, (int Total, int Kept, string Sample)>();
@@ -103,6 +118,18 @@ public sealed class RengaModelGateway : IModelGateway
                     Name = mo.Name ?? string.Empty,
                     RengaTypeId = mo.ObjectTypeS,
                 };
+                // Уровень (этаж) объекта — для фильтра по уровням. Читаем LevelId через рефлексию:
+                // так код собирается независимо от точного имени/наличия свойства в этой сборке Renga,
+                // а при отсутствии — объект просто считается «без уровня».
+                try
+                {
+                    if (mo.GetType().GetProperty("LevelId")?.GetValue(mo) is int lid)
+                    {
+                        obj.LevelId = lid;
+                        obj.LevelName = levelNames.TryGetValue(lid, out var ln) ? ln : null;
+                    }
+                }
+                catch { /* уровень недоступен — объект считается «без уровня» */ }
                 ReadProperties(mo, obj);
                 ReadParameters(mo, obj);
                 ReadQuantities(mo, obj);
@@ -277,6 +304,26 @@ public sealed class RengaModelGateway : IModelGateway
             _application.Selection.SetSelectedObjects(new[] { mo.Id });
         }
         catch { /* переход к объекту не должен ронять UI */ }
+    }
+
+    /// <summary>Выделить в Renga сразу набор объектов по устойчивым идентификаторам (подсветка группы).</summary>
+    public void SelectManyByUniqueId(IReadOnlyList<string> uniqueIds)
+    {
+        try
+        {
+            var project = _application.Project;
+            if (project is null) return;
+            var objects = project.Model.GetObjects();
+            var ids = new List<int>();
+            foreach (var u in uniqueIds)
+            {
+                if (!Guid.TryParse(u, out var guid)) continue;
+                var mo = objects.GetByUniqueId(guid);
+                if (mo is not null) ids.Add(mo.Id);
+            }
+            if (ids.Count > 0) _application.Selection.SetSelectedObjects(ids.ToArray());
+        }
+        catch { /* подсветка не должна ронять UI */ }
     }
 
     public ApplyReport ApplyChanges(IReadOnlyList<ModelChange> approvedChanges)

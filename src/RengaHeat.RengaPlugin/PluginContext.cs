@@ -20,6 +20,9 @@ public sealed class PluginContext
     /// <summary>Выделить/показать объект в Renga по его идентификатору (необязательно).</summary>
     public Action<string>? SelectInRenga { get; init; }
 
+    /// <summary>Выделить/подсветить группу объектов в Renga по идентификаторам (необязательно).</summary>
+    public Action<IReadOnlyList<string>>? SelectManyInRenga { get; init; }
+
     /// <summary>Применить подтверждённые изменения (необязательно; null — применение недоступно).</summary>
     public Func<IReadOnlyList<ModelChange>, string>? ApplyChanges { get; init; }
 
