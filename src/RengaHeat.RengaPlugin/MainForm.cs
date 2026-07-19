@@ -9,93 +9,159 @@ using RengaHeat.Core.Validation;
 namespace RengaHeat.RengaPlugin;
 
 /// <summary>
-/// Главное окно плагина: хаб с навигацией по разделам. По открытию читает модель (быстро),
-/// но НЕ считает — расчёт запускается явной командой в разделе «Обзор».
-/// Форма зависит только от ядра RengaHeat.Core и делегатов PluginContext.
+/// Главное окно плагина: немодальный хаб с навигацией по разделам в светлом стиле Renga.
+/// По открытию читает модель (быстро), но НЕ считает — расчёт запускается явной командой.
+/// Зависит только от ядра RengaHeat.Core и делегатов PluginContext.
 /// </summary>
 public sealed class MainForm : Form
 {
+    // Палитра в духе интерфейса Renga: светлый фон, спокойный синий акцент.
+    private static readonly Color Accent = Color.FromArgb(0x2F, 0x80, 0xED);
+    private static readonly Color NavBg = Color.FromArgb(0xF4, 0xF6, 0xF8);
+    private static readonly Color PanelBg = Color.White;
+    private static readonly Color BorderColor = Color.FromArgb(0xE1, 0xE5, 0xEA);
+    private static readonly Color TextDark = Color.FromArgb(0x25, 0x2A, 0x31);
+    private static readonly Color TextMuted = Color.FromArgb(0x6B, 0x72, 0x80);
+    private static readonly Color SelBg = Color.FromArgb(0xE8, 0xF0, 0xFE);
+
+    private readonly Font _ui = new("Segoe UI", 9.5f);
+    private readonly Font _uiBold = new("Segoe UI", 9.5f, FontStyle.Bold);
+    private readonly Font _navFont = new("Segoe UI", 10f);
+    private readonly Font _navFontSel = new("Segoe UI", 10f, FontStyle.Bold);
+    private readonly Font _h1 = new("Segoe UI", 13f, FontStyle.Bold);
+
     private readonly PluginContext _ctx;
     private HeatingModel? _model;
     private SessionOutcome? _outcome;
 
     private readonly ListBox _nav = new();
-    private readonly Panel _content = new() { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(12) };
-    private readonly Label _status = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(12, 0, 0, 0) };
+    private readonly Panel _content = new() { Dock = DockStyle.Fill, BackColor = PanelBg };
+    private readonly Label _status = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(14, 0, 0, 0) };
 
-    private static readonly string[] Sections =
+    private static readonly (string Title, string Glyph)[] Sections =
     {
-        "Обзор", "Профиль", "Классификатор", "Сопоставление",
-        "Проверка модели", "Расчёт", "Балансировка", "Предпросмотр изменений", "Отчёты и экспорт",
+        ("Обзор", "▦"), ("Профиль", "⚙"), ("Классификатор", "▤"), ("Сопоставление", "⇄"),
+        ("Проверка модели", "✓"), ("Расчёт", "∑"), ("Балансировка", "≡"),
+        ("Предпросмотр изменений", "✎"), ("Отчёты и экспорт", "⭳"),
     };
 
     public MainForm(PluginContext ctx)
     {
         _ctx = ctx;
         Text = "RengaHeat — гидравлический расчёт отопления";
-        Width = 1040;
-        Height = 700;
+        Width = 1080;
+        Height = 720;
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(820, 560);
+        MinimumSize = new Size(880, 580);
+        BackColor = PanelBg;
+        Font = _ui;
+        try { Icon = SystemIcons.Application; } catch { /* без иконки — не критично */ }
 
         BuildLayout();
         TryLoadModel();
-        _nav.SelectedIndex = 0; // вызывает ShowSection("Обзор")
+        _nav.SelectedIndex = 0;
     }
 
     private void BuildLayout()
     {
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3, BackColor = PanelBg };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 232));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));   // шапка
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));   // навигация + контент
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));   // статус-бар
 
-        _status.Font = new Font(FontFamily.GenericSansSerif, 9.5f);
-        _status.BackColor = Color.FromArgb(238, 242, 248);
-        root.Controls.Add(_status, 0, 0);
-        root.SetColumnSpan(_status, 2);
-
-        _nav.Dock = DockStyle.Fill;
-        _nav.Font = new Font(FontFamily.GenericSansSerif, 10.5f);
-        _nav.IntegralHeight = false;
-        _nav.Items.AddRange(Sections);
-        _nav.SelectedIndexChanged += (_, _) =>
+        // Шапка приложения
+        var header = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg };
+        header.Paint += (_, e) => e.Graphics.DrawLine(new Pen(BorderColor), 0, header.Height - 1, header.Width, header.Height - 1);
+        var title = new Label
         {
-            if (_nav.SelectedItem is string s) ShowSection(s);
+            Text = "RengaHeat", AutoSize = true, ForeColor = Accent,
+            Font = new Font("Segoe UI", 15f, FontStyle.Bold), Location = new Point(16, 8),
         };
-        root.Controls.Add(_nav, 0, 1);
+        var subtitle = new Label
+        {
+            Text = "гидравлический расчёт систем отопления", AutoSize = true, ForeColor = TextMuted,
+            Font = _ui, Location = new Point(18, 34),
+        };
+        header.Controls.Add(title);
+        header.Controls.Add(subtitle);
+        root.Controls.Add(header, 0, 0);
+        root.SetColumnSpan(header, 2);
+
+        // Навигация (owner-drawn)
+        _nav.Dock = DockStyle.Fill;
+        _nav.BorderStyle = BorderStyle.None;
+        _nav.BackColor = NavBg;
+        _nav.DrawMode = DrawMode.OwnerDrawFixed;
+        _nav.ItemHeight = 42;
+        _nav.IntegralHeight = false;
+        foreach (var s in Sections) _nav.Items.Add(s.Title);
+        _nav.DrawItem += NavDrawItem;
+        _nav.SelectedIndexChanged += (_, _) => { if (_nav.SelectedItem is string s) ShowSection(s); };
+        var navHost = new Panel { Dock = DockStyle.Fill, BackColor = NavBg, Padding = new Padding(0, 6, 0, 0) };
+        navHost.Paint += (_, e) => e.Graphics.DrawLine(new Pen(BorderColor), navHost.Width - 1, 0, navHost.Width - 1, navHost.Height);
+        navHost.Controls.Add(_nav);
+        root.Controls.Add(navHost, 0, 1);
+
         root.Controls.Add(_content, 1, 1);
+
+        // Статус-бар
+        _status.Font = _ui;
+        _status.ForeColor = TextMuted;
+        var statusHost = new Panel { Dock = DockStyle.Fill, BackColor = NavBg };
+        statusHost.Paint += (_, e) => e.Graphics.DrawLine(new Pen(BorderColor), 0, 0, statusHost.Width, 0);
+        statusHost.Controls.Add(_status);
+        root.Controls.Add(statusHost, 0, 2);
+        root.SetColumnSpan(statusHost, 2);
+
         Controls.Add(root);
+    }
+
+    private void NavDrawItem(object? sender, DrawItemEventArgs e)
+    {
+        if (e.Index < 0) return;
+        var selected = (e.State & DrawItemState.Selected) != 0;
+        using (var bg = new SolidBrush(selected ? PanelBg : NavBg))
+            e.Graphics.FillRectangle(bg, e.Bounds);
+        if (selected)
+            using (var bar = new SolidBrush(Accent))
+                e.Graphics.FillRectangle(bar, e.Bounds.X, e.Bounds.Y, 4, e.Bounds.Height);
+
+        var glyph = Sections[e.Index].Glyph;
+        var text = Sections[e.Index].Title;
+        var rect = new Rectangle(e.Bounds.X + 14, e.Bounds.Y, e.Bounds.Width - 16, e.Bounds.Height);
+        TextRenderer.DrawText(e.Graphics, glyph + "   " + text, selected ? _navFontSel : _navFont, rect,
+            selected ? Accent : TextDark, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+    }
+
+    /// <summary>Перечитать модель из Renga (окно немодальное — модель могла измениться).</summary>
+    public void ReloadModel()
+    {
+        _outcome = null;
+        TryLoadModel();
+        if (_nav.SelectedItem is string s) ShowSection(s);
     }
 
     private void TryLoadModel()
     {
-        try
-        {
-            _model = _ctx.ReadModel();
-            UpdateStatus();
-        }
-        catch (Exception ex)
-        {
-            _model = null;
-            _status.Text = "Не удалось прочитать модель: " + ex.Message;
-        }
+        try { _model = _ctx.ReadModel(); }
+        catch (Exception ex) { _model = null; _status.Text = "Не удалось прочитать модель: " + ex.Message; return; }
+        UpdateStatus();
     }
 
     private void UpdateStatus()
     {
-        var profile = $"Профиль: {_ctx.Profile.Name} (вер. {_ctx.Profile.Version}), график {_ctx.Profile.HeatingSchedule}";
-        var model = _model is null ? "модель не загружена" : $"объектов в модели: {_model.Objects.Count}";
+        var model = _model is null ? "модель не загружена" : $"объектов: {_model.Objects.Count}, связей: {_model.Connections.Count}";
         var ready = _outcome is null ? "расчёт не выполнялся"
-            : (_outcome.IsReady ? "статус: ГОТОВО" : "статус: есть замечания");
-        _status.Text = $"{profile}    |    {model}    |    {ready}";
+            : (_outcome.IsReady ? "✓ готово" : "⚠ есть замечания");
+        _status.Text = $"Профиль: {_ctx.Profile.Name} · график {_ctx.Profile.HeatingSchedule}     |     {model}     |     {ready}";
     }
 
     private void ShowSection(string section)
     {
         _content.Controls.Clear();
-        var control = section switch
+        var body = section switch
         {
             "Обзор" => BuildOverview(),
             "Профиль" => BuildProfile(),
@@ -108,83 +174,84 @@ public sealed class MainForm : Form
             "Отчёты и экспорт" => BuildReports(),
             _ => Info("Раздел в разработке."),
         };
-        control.Dock = DockStyle.Fill;
-        _content.Controls.Add(control);
+        body.Dock = DockStyle.Fill;
+
+        var inner = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg, Padding = new Padding(20, 14, 20, 16), AutoScroll = true };
+        inner.Controls.Add(body);
+
+        var host = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg };
+        host.Controls.Add(inner);
+        host.Controls.Add(SectionHeader(section));
+        _content.Controls.Add(host);
+    }
+
+    private Panel SectionHeader(string section)
+    {
+        var panel = new Panel { Dock = DockStyle.Top, Height = 50, BackColor = PanelBg, Padding = new Padding(20, 0, 20, 0) };
+        panel.Paint += (_, e) => e.Graphics.DrawLine(new Pen(BorderColor), 0, panel.Height - 1, panel.Width, panel.Height - 1);
+        panel.Controls.Add(new Label { Text = section, Dock = DockStyle.Fill, Font = _h1, ForeColor = TextDark, TextAlign = ContentAlignment.MiddleLeft });
+        return panel;
     }
 
     // ---------- Разделы ----------
 
     private Control BuildOverview()
     {
-        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoScroll = true };
-        panel.Controls.Add(Header("Обзор модели"));
+        var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
+
+        var bar = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0, 0, 0, 10) };
+        var runBtn = PrimaryButton("▶  Рассчитать");
+        runBtn.Click += (_, _) => RunCalculation();
+        var reloadBtn = SecondaryButton("⭯  Обновить модель");
+        reloadBtn.Click += (_, _) => ReloadModel();
+        bar.Controls.Add(runBtn);
+        bar.Controls.Add(reloadBtn);
+        panel.Controls.Add(bar);
 
         if (_model is null)
         {
-            panel.Controls.Add(Info("Модель не загружена. Откройте проект Renga и переоткройте плагин."));
+            panel.Controls.Add(Info("Модель не загружена. Откройте проект Renga и нажмите «Обновить модель»."));
             return panel;
         }
 
         var byType = _model.Objects.Values
             .GroupBy(o => string.IsNullOrEmpty(o.RengaTypeId) ? "(тип не задан)" : o.RengaTypeId)
-            .OrderByDescending(g => g.Count())
-            .Take(20)
-            .Select(g => $"   {g.Key}: {g.Count()}");
-        panel.Controls.Add(Info(
-            $"Всего объектов: {_model.Objects.Count}\r\n" +
-            $"Соединений: {_model.Connections.Count}\r\n\r\n" +
-            "Топ типов объектов:\r\n" + string.Join("\r\n", byType)));
-
-        var runBtn = new Button
-        {
-            Text = "▶  Рассчитать",
-            Height = 40, Width = 200,
-            Font = new Font(FontFamily.GenericSansSerif, 11f, FontStyle.Bold),
-            BackColor = Color.FromArgb(46, 125, 50), ForeColor = Color.White, FlatStyle = FlatStyle.Flat,
-            Margin = new Padding(3, 12, 3, 6),
-        };
-        runBtn.Click += (_, _) => RunCalculation();
-        panel.Controls.Add(runBtn);
+            .OrderByDescending(g => g.Count()).Take(15)
+            .Select(g => $"   • {g.Key}: {g.Count()}");
+        panel.Controls.Add(Card("Модель",
+            $"Всего объектов: {_model.Objects.Count}\r\nСоединений: {_model.Connections.Count}\r\n\r\n" +
+            "Наиболее частые типы объектов:\r\n" + string.Join("\r\n", byType)));
 
         panel.Controls.Add(Info(
             "Расчёт выполняется по текущему профилю и настройкам классификатора/сопоставления.\r\n" +
-            "Если роли объектов не распознаны, сначала настройте разделы «Классификатор» и «Сопоставление» —\r\n" +
+            "Если роли объектов не распознаны, сначала настройте «Классификатор» и «Сопоставление», " +
             "иначе появится много замечаний «роль не определена»."));
 
         if (_outcome is not null)
         {
             var errors = _outcome.AllFindings.Count(f => f.Status == FindingStatus.Error);
             var decisions = _outcome.AllFindings.Count(f => f.Status == FindingStatus.NeedsDecision);
-            panel.Controls.Add(Info(
-                $"\r\nПоследний расчёт:\r\n" +
-                $"   источников (ИТП): {_outcome.Topology.Sources.Count}\r\n" +
-                $"   рассчитано контуров: {_outcome.Results.Count}\r\n" +
-                $"   ошибок: {errors}, требуют решения: {decisions}\r\n" +
-                $"   готовность: {(_outcome.IsReady ? "ГОТОВО" : "есть замечания")}"));
+            panel.Controls.Add(Card("Последний расчёт",
+                $"Источников (ИТП): {_outcome.Topology.Sources.Count}\r\n" +
+                $"Рассчитано контуров: {_outcome.Results.Count}\r\n" +
+                $"Ошибок: {errors}, требуют решения: {decisions}\r\n" +
+                $"Готовность: {(_outcome.IsReady ? "ГОТОВО" : "есть замечания")}"));
         }
         return panel;
     }
 
     private void RunCalculation()
     {
-        if (_model is null) { MessageBox.Show("Модель не загружена."); return; }
+        if (_model is null) { Msg("Модель не загружена."); return; }
         try
         {
             Cursor = Cursors.WaitCursor;
             _outcome = _ctx.RunSession(_model);
             UpdateStatus();
-            MessageBox.Show(this,
-                $"Расчёт выполнен.\r\nКонтуров: {_outcome.Results.Count}, замечаний: {_outcome.AllFindings.Count()}.\r\n" +
-                "Перейдите в разделы «Проверка модели», «Расчёт», «Балансировка».",
-                "RengaHeat", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            ShowSection("Расчёт");
             _nav.SelectedItem = "Расчёт";
+            ShowSection("Расчёт");
         }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, "Ошибка расчёта: " + ex.Message, "RengaHeat",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
+        catch (Exception ex) { Msg("Ошибка расчёта: " + ex.Message, MessageBoxIcon.Error); }
         finally { Cursor = Cursors.Default; }
     }
 
@@ -192,8 +259,7 @@ public sealed class MainForm : Form
     {
         var p = _ctx.Profile;
         var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
-        panel.Controls.Add(Header($"Профиль требований: {p.Name} (вер. {p.Version})"));
-        panel.Controls.Add(Info(
+        panel.Controls.Add(Card($"{p.Name} (вер. {p.Version})",
             $"Источник: {p.SourceDocument}\r\n\r\n" +
             $"График отопления:            {p.HeatingSchedule}\r\n" +
             $"График теплоснабжения вент.: {p.VentilationSchedule}\r\n\r\n" +
@@ -201,23 +267,20 @@ public sealed class MainForm : Form
             $"Не более коллекторов в секции:      {p.MaxManifoldsPerSection}\r\n" +
             $"Не более приборов в кольце:         {p.MaxDevicesPerHorizontalLoop}\r\n" +
             $"Этажей нижней зоны (макс.):         {p.MaxFloorsLowerZone}\r\n" +
-            $"Запас мощности (терморег.):         {p.PowerMarginThermostaticPercent} %\r\n" +
-            $"Запас мощности (техпомещения):      {p.PowerMarginTechnicalPercent} %\r\n" +
+            $"Запас мощности (терморег./тех.):    {p.PowerMarginThermostaticPercent} % / {p.PowerMarginTechnicalPercent} %\r\n" +
             $"Длина радиатора в квартире (макс.): {p.MaxApartmentRadiatorLengthM * 1000:0} мм\r\n" +
-            $"Сталь ВГП до Ду{p.MaxVgpDn}, выше — электросварные\r\n" +
-            $"Поквартирные PE-Xa до Ду{p.MaxApartmentPexDn}\r\n" +
+            $"Сталь ВГП до Ду{p.MaxVgpDn}, выше — электросварные; поквартирные PE-Xa до Ду{p.MaxApartmentPexDn}\r\n" +
             $"Регулятор перепада перед коллектором: {(p.RequireDprBeforeManifold ? "требуется" : "нет")}\r\n" +
             $"Теплосчётчик на обратке:             {(p.HeatMeterOnReturn ? "да" : "нет")}\r\n\r\n" +
             $"Лимит скорости (квартиры/магистрали): {p.MaxVelocityApartmentMS} / {p.MaxVelocityMainMS} м/с\r\n" +
             $"Лимит удельных потерь:                {p.MaxSpecificLossPaM} Па/м"));
-        panel.Controls.Add(Info("\r\nРедактирование профиля и создание собственных профилей — в следующей версии UI."));
+        panel.Controls.Add(Info("Редактирование профиля и собственные профили — в следующей версии."));
         return panel;
     }
 
     private Control BuildClassifier()
     {
-        if (_outcome is null)
-            return Info("Роли определяются при расчёте. Нажмите «Рассчитать» в разделе «Обзор».");
+        if (_outcome is null) return Info("Роли определяются при расчёте. Нажмите «Рассчитать» в разделе «Обзор».");
         if (_model is null) return Info("Модель не загружена.");
 
         var table = new DataTable();
@@ -230,8 +293,8 @@ public sealed class MainForm : Form
             table.Rows.Add(o.Name, o.RengaTypeId ?? "", RoleNames.Of(o.Role.Role), o.Role.Source.ToString(), o.Id);
 
         var unknown = _model.Objects.Values.Count(o => o.Role.Role == ObjectRole.Unknown);
-        return WithGrid($"Классификатор ролей. Не определено ролей: {unknown} из {_model.Objects.Count}. " +
-                        "Двойной клик — показать объект в Renga.", table, "ObjectId");
+        return WithGrid($"Не определено ролей: {unknown} из {_model.Objects.Count}. Двойной клик — показать объект в Renga.",
+            table, "ObjectId");
     }
 
     private Control BuildMapping()
@@ -243,20 +306,17 @@ public sealed class MainForm : Form
         table.Columns.Add("Цепочка источников");
         table.Columns.Add("Единица");
         foreach (var r in mappings.Rules)
-            table.Rows.Add(
-                r.Field.DisplayName,
+            table.Rows.Add(r.Field.DisplayName,
                 r.AppliesToRoles.Count == 0 ? "все" : string.Join(", ", r.AppliesToRoles.Select(RoleNames.Of)),
                 string.Join(" → ", r.SourceChain.Select(s => s.Kind)),
                 r.SourceUnitSymbol ?? r.Field.BaseUnitSymbol);
-        return WithGrid("Сопоставление: откуда ядро берёт значения. Значения ищутся по цепочке " +
-                        "(если первый источник пуст — берётся следующий). Выбор конкретных свойств вашей " +
-                        "модели — в следующей версии UI.", table, null);
+        return WithGrid("Откуда ядро берёт значения. Если первый источник пуст — берётся следующий по цепочке. " +
+                        "Выбор конкретных свойств вашей модели — в следующей версии.", table, null);
     }
 
     private Control BuildValidation()
     {
-        if (_outcome is null)
-            return Info("Замечания появляются после расчёта. Нажмите «Рассчитать» в разделе «Обзор».");
+        if (_outcome is null) return Info("Замечания появляются после расчёта. Нажмите «Рассчитать» в разделе «Обзор».");
 
         var all = _outcome.AllFindings.ToList();
         var table = new DataTable();
@@ -265,22 +325,18 @@ public sealed class MainForm : Form
         table.Columns.Add("Сообщение");
         table.Columns.Add("Группа");
         table.Columns.Add("ObjectId");
-        // Ограничиваем вывод, чтобы грид не «завис» на десятках тысяч строк.
         const int cap = 3000;
         foreach (var f in all.OrderBy(f => f.Status).Take(cap))
             table.Rows.Add(StatusText(f.Status), f.Code, f.Message, f.Grouping ?? "", f.ObjectId ?? "");
 
-        var summary = string.Join("   ", all.GroupBy(f => f.Status)
-            .Select(g => $"{StatusText(g.Key)}: {g.Count()}"));
-        var note = all.Count > cap ? $" (показаны первые {cap} из {all.Count})" : "";
-        return WithGrid($"Проверка модели. {summary}.{note} Двойной клик — показать объект в Renga.",
-            table, "ObjectId");
+        var summary = string.Join("    ", all.GroupBy(f => f.Status).Select(g => $"{StatusText(g.Key)}: {g.Count()}"));
+        var note = all.Count > cap ? $"  (показаны первые {cap} из {all.Count})" : "";
+        return WithGrid($"{summary}.{note}  Двойной клик — показать объект в Renga.", table, "ObjectId");
     }
 
     private Control BuildCalculation()
     {
-        if (_outcome is null)
-            return Info("Результаты появляются после расчёта. Нажмите «Рассчитать» в разделе «Обзор».");
+        if (_outcome is null) return Info("Результаты появляются после расчёта. Нажмите «Рассчитать» в разделе «Обзор».");
         if (_outcome.Results.Count == 0)
             return Info("Расчёт не дал результатов: не найден источник (ИТП) или во фрагменте нет приборов. " +
                         "Проверьте роли в «Классификаторе» и замечания в «Проверке модели».");
@@ -288,16 +344,14 @@ public sealed class MainForm : Form
         var tabs = new TabControl { Dock = DockStyle.Fill };
         foreach (var r in _outcome.Results)
         {
-            var page = new TabPage(r.SourceName);
-            var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 90 };
-
+            var page = new TabPage(r.SourceName) { BackColor = PanelBg, Padding = new Padding(6) };
             var crit = r.Devices.FirstOrDefault(d => d.DeviceId == r.CriticalRingDeviceId)?.DeviceName ?? "—";
-            split.Panel1.Controls.Add(Info(
-                $"Суммарный расход: {r.TotalFlowKgS * 3600:0.0} кг/ч    " +
-                $"Требуемый напор: {r.RequiredHeadPa / 1000:0.00} кПа    " +
+            var summary = Card("Итоги контура",
+                $"Суммарный расход: {r.TotalFlowKgS * 3600:0.0} кг/ч        Требуемый напор: {r.RequiredHeadPa / 1000:0.00} кПа\r\n" +
                 $"Критическое кольцо: {crit}\r\n" +
-                $"Насос: {(r.Pump?.Pump is { } pump ? $"{pump.Article} ({r.Pump.DutyFlowM3H:0.00} м³/ч / {r.Pump.DutyHeadKPa:0.0} кПа)" : "не подобран")}    " +
-                $"Сходимость: {(r.Converged ? "да" : "нет")}"));
+                $"Насос: {(r.Pump?.Pump is { } pump ? $"{pump.Article} ({r.Pump.DutyFlowM3H:0.00} м³/ч / {r.Pump.DutyHeadKPa:0.0} кПа)" : "не подобран")}        " +
+                $"Сходимость: {(r.Converged ? "да" : "нет")}");
+            summary.Dock = DockStyle.Top;
 
             var devTable = new DataTable();
             devTable.Columns.Add("Прибор");
@@ -310,9 +364,11 @@ public sealed class MainForm : Form
             foreach (var d in r.Devices)
                 devTable.Rows.Add(d.DeviceName, d.Grouping ?? "", $"{d.LoadW:0}", $"{d.MassFlowKgS * 3600:0.0}",
                     $"{d.AvailablePressurePa:0}", d.DeviceId == r.CriticalRingDeviceId ? "да" : "", d.DeviceId);
-            split.Panel2.Controls.Add(MakeGrid(devTable, "ObjectId"));
+            var grid = MakeGrid(devTable, "ObjectId");
+            grid.Dock = DockStyle.Fill;
 
-            page.Controls.Add(split);
+            page.Controls.Add(grid);
+            page.Controls.Add(summary);
             tabs.TabPages.Add(page);
         }
         return tabs;
@@ -325,7 +381,7 @@ public sealed class MainForm : Form
         if (rows.Count == 0) return Info("Нет данных балансировки (сначала выполните расчёт).");
 
         var table = new DataTable();
-        table.Columns.Add("Прибор (ObjectId)");
+        table.Columns.Add("Прибор");
         table.Columns.Add("Избыток, Па");
         table.Columns.Add("Требуемая Kv");
         table.Columns.Add("Клапан");
@@ -337,8 +393,7 @@ public sealed class MainForm : Form
             table.Rows.Add(b.DeviceObjectId, $"{b.ExcessPressurePa:0}", $"{b.RequiredKv:0.000}",
                 b.Valve?.Article ?? "", b.PresetN?.ToString("0.0") ?? "", b.ValveAuthority?.ToString("0.00") ?? "",
                 b.IsCriticalRing ? "да" : "", b.DeviceObjectId);
-        return WithGrid("Балансировка колец: преднастройка n балансировочных клапанов и авторитет.",
-            table, "ObjectId");
+        return WithGrid("Преднастройка n балансировочных клапанов и авторитет.", table, "ObjectId");
     }
 
     private Control BuildPreview()
@@ -346,58 +401,49 @@ public sealed class MainForm : Form
         if (_outcome is null) return Info("Изменения формируются после расчёта.");
         var changes = _outcome.PreviewChanges.Changes;
         if (changes.Count == 0)
-            return Info("Нет предлагаемых изменений. Изменения появляются, когда включена запись результатов " +
-                        "и настроены свойства-приёмники (по умолчанию плагин работает в режиме только анализа).");
+            return Info("Нет предлагаемых изменений. Они появляются, когда включена запись результатов и настроены " +
+                        "свойства-приёмники (по умолчанию плагин работает в режиме только анализа — модель не меняется).");
 
         var grid = new DataGridView
         {
             Dock = DockStyle.Fill, AllowUserToAddRows = false, ReadOnly = false,
             SelectionMode = DataGridViewSelectionMode.FullRowSelect, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
         };
-        var colApprove = new DataGridViewCheckBoxColumn { HeaderText = "✔", Width = 40, FillWeight = 8 };
+        StyleGrid(grid);
+        var colApprove = new DataGridViewCheckBoxColumn { HeaderText = "✔", FillWeight = 8 };
         grid.Columns.Add(colApprove);
         grid.Columns.Add("obj", "Объект");
         grid.Columns.Add("target", "Что меняется");
         grid.Columns.Add("old", "Было");
         grid.Columns.Add("new", "Станет");
         grid.Columns.Add("reason", "Основание");
-        foreach (var c in grid.Columns) ((DataGridViewColumn)c).ReadOnly = c == grid.Columns[0] ? false : true;
+        for (var i = 1; i < grid.Columns.Count; i++) grid.Columns[i].ReadOnly = true;
         foreach (var ch in changes)
             grid.Rows.Add(ch.Approved, ch.ObjectName, ch.Target, ch.OldValue?.ToString() ?? "—",
                 ch.NewValue?.ToString() ?? "—", ch.Reason);
 
-        var apply = new Button { Text = "Применить отмеченные (с Undo)", Dock = DockStyle.Bottom, Height = 36 };
+        var apply = PrimaryButton("Применить отмеченные (с поддержкой Undo)");
+        apply.Dock = DockStyle.Bottom;
         apply.Click += (_, _) =>
         {
-            if (_ctx.ApplyChanges is null)
-            {
-                MessageBox.Show(this, "Применение изменений недоступно: включён режим только анализа.", "RengaHeat");
-                return;
-            }
+            if (_ctx.ApplyChanges is null) { Msg("Применение недоступно: включён режим только анализа."); return; }
             var approved = new List<ModelChange>();
             for (var i = 0; i < changes.Count; i++)
                 if (grid.Rows[i].Cells[0].Value is true) { changes[i].Approved = true; approved.Add(changes[i]); }
-            if (approved.Count == 0) { MessageBox.Show(this, "Не отмечено ни одного изменения."); return; }
-            var report = _ctx.ApplyChanges(approved);
-            MessageBox.Show(this, report, "RengaHeat — применение", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (approved.Count == 0) { Msg("Не отмечено ни одного изменения."); return; }
+            Msg(_ctx.ApplyChanges(approved));
         };
 
         var host = new Panel { Dock = DockStyle.Fill };
         host.Controls.Add(grid);
         host.Controls.Add(apply);
-        var wrap = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1 };
-        wrap.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        wrap.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        wrap.Controls.Add(Header("Предпросмотр изменений — применяются только после подтверждения"), 0, 0);
-        wrap.Controls.Add(host, 0, 1);
-        return wrap;
+        return host;
     }
 
     private Control BuildReports()
     {
         if (_outcome is null) return Info("Отчёты доступны после расчёта.");
         var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
-        panel.Controls.Add(Header("Отчёты и экспорт"));
 
         panel.Controls.Add(SaveButton("Печатный отчёт по сессии (.txt)", "RengaHeat_отчёт.txt",
             "Текст (*.txt)|*.txt", () => Reports.SessionReport(_outcome!)));
@@ -419,9 +465,37 @@ public sealed class MainForm : Form
 
     // ---------- Вспомогательное ----------
 
+    private Button PrimaryButton(string text)
+    {
+        var b = new Button
+        {
+            Text = text, AutoSize = false, Height = 38, Width = 240, Margin = new Padding(0, 0, 8, 0),
+            Font = _uiBold, BackColor = Accent, ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
+        };
+        b.FlatAppearance.BorderSize = 0;
+        b.FlatAppearance.MouseOverBackColor = Color.FromArgb(0x1E, 0x6F, 0xD9);
+        return b;
+    }
+
+    private Button SecondaryButton(string text)
+    {
+        var b = new Button
+        {
+            Text = text, AutoSize = false, Height = 38, Width = 200, Margin = new Padding(0, 0, 8, 0),
+            Font = _ui, BackColor = PanelBg, ForeColor = TextDark, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
+        };
+        b.FlatAppearance.BorderColor = BorderColor;
+        b.FlatAppearance.BorderSize = 1;
+        b.FlatAppearance.MouseOverBackColor = NavBg;
+        return b;
+    }
+
     private Button SaveButton(string text, string defaultName, string filter, Func<string> content)
     {
-        var btn = new Button { Text = text, Width = 380, Height = 32, Margin = new Padding(3, 3, 3, 3), TextAlign = ContentAlignment.MiddleLeft };
+        var btn = SecondaryButton("⭳  " + text);
+        btn.Width = 420;
+        btn.TextAlign = ContentAlignment.MiddleLeft;
+        btn.Margin = new Padding(0, 0, 0, 8);
         btn.Click += (_, _) =>
         {
             using var dlg = new SaveFileDialog { FileName = defaultName, Filter = filter };
@@ -429,21 +503,30 @@ public sealed class MainForm : Form
             try
             {
                 System.IO.File.WriteAllText(dlg.FileName, content(), new System.Text.UTF8Encoding(true));
-                MessageBox.Show(this, "Сохранено: " + dlg.FileName, "RengaHeat");
+                Msg("Сохранено: " + dlg.FileName);
             }
-            catch (Exception ex) { MessageBox.Show(this, "Ошибка сохранения: " + ex.Message, "RengaHeat"); }
+            catch (Exception ex) { Msg("Ошибка сохранения: " + ex.Message, MessageBoxIcon.Error); }
         };
         return btn;
     }
 
+    private Panel Card(string title, string body)
+    {
+        var card = new Panel { AutoSize = true, BackColor = Color.FromArgb(0xFB, 0xFC, 0xFD), Margin = new Padding(0, 0, 0, 12), Padding = new Padding(14, 10, 14, 12) };
+        card.Paint += (_, e) => e.Graphics.DrawRectangle(new Pen(BorderColor), 0, 0, card.Width - 1, card.Height - 1);
+        var flow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
+        flow.Controls.Add(new Label { Text = title, AutoSize = true, Font = _uiBold, ForeColor = Accent, Margin = new Padding(0, 0, 0, 4) });
+        flow.Controls.Add(new Label { Text = body, AutoSize = true, Font = _ui, ForeColor = TextDark, MaximumSize = new Size(720, 0) });
+        card.Controls.Add(flow);
+        return card;
+    }
+
     private Control WithGrid(string caption, DataTable table, string? idColumn)
     {
-        var wrap = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1 };
-        wrap.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
-        wrap.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        wrap.Controls.Add(new Label { Text = caption, Dock = DockStyle.Fill, AutoSize = false }, 0, 0);
-        wrap.Controls.Add(MakeGrid(table, idColumn), 0, 1);
-        return wrap;
+        var host = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg };
+        host.Controls.Add(MakeGrid(table, idColumn));
+        host.Controls.Add(new Label { Text = caption, Dock = DockStyle.Top, Height = 34, ForeColor = TextMuted, Font = _ui, TextAlign = ContentAlignment.MiddleLeft });
+        return host;
     }
 
     private DataGridView MakeGrid(DataTable table, string? idColumn)
@@ -454,10 +537,10 @@ public sealed class MainForm : Form
             SelectionMode = DataGridViewSelectionMode.FullRowSelect, RowHeadersVisible = false,
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
         };
+        StyleGrid(grid);
         grid.DataBindingComplete += (_, _) =>
         {
-            if (idColumn is not null && grid.Columns.Contains(idColumn))
-                grid.Columns[idColumn].Visible = false;
+            if (idColumn is not null && grid.Columns.Contains(idColumn)) grid.Columns[idColumn].Visible = false;
         };
         if (idColumn is not null)
             grid.CellDoubleClick += (_, e) =>
@@ -469,17 +552,38 @@ public sealed class MainForm : Form
         return grid;
     }
 
-    private static Label Header(string text) => new()
+    private void StyleGrid(DataGridView grid)
     {
-        Text = text, AutoSize = false, Dock = DockStyle.Top, Height = 30,
-        Font = new Font(FontFamily.GenericSansSerif, 12f, FontStyle.Bold),
+        grid.BorderStyle = BorderStyle.None;
+        grid.BackgroundColor = PanelBg;
+        grid.GridColor = BorderColor;
+        grid.EnableHeadersVisualStyles = false;
+        grid.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.Single;
+        grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
+        grid.ColumnHeadersHeight = 34;
+        grid.ColumnHeadersDefaultCellStyle.BackColor = NavBg;
+        grid.ColumnHeadersDefaultCellStyle.ForeColor = TextDark;
+        grid.ColumnHeadersDefaultCellStyle.Font = _uiBold;
+        grid.ColumnHeadersDefaultCellStyle.Padding = new Padding(6, 0, 6, 0);
+        grid.DefaultCellStyle.Font = _ui;
+        grid.DefaultCellStyle.ForeColor = TextDark;
+        grid.DefaultCellStyle.SelectionBackColor = SelBg;
+        grid.DefaultCellStyle.SelectionForeColor = TextDark;
+        grid.DefaultCellStyle.Padding = new Padding(6, 3, 6, 3);
+        grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(0xFA, 0xFB, 0xFC);
+        grid.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal;
+        grid.AllowUserToResizeRows = false;
+        grid.RowTemplate.Height = 26;
+    }
+
+    private Label Info(string text) => new()
+    {
+        Text = text, AutoSize = true, Font = _ui, ForeColor = TextMuted,
+        Margin = new Padding(0, 6, 0, 6), MaximumSize = new Size(760, 0),
     };
 
-    private static Label Info(string text) => new()
-    {
-        Text = text, AutoSize = true, Font = new Font(FontFamily.GenericSansSerif, 9.75f),
-        Margin = new Padding(3, 6, 3, 6), MaximumSize = new Size(760, 0),
-    };
+    private void Msg(string text, MessageBoxIcon icon = MessageBoxIcon.Information) =>
+        MessageBox.Show(this, text, "RengaHeat", MessageBoxButtons.OK, icon);
 
     private static string StatusText(FindingStatus s) => s switch
     {

@@ -18,6 +18,13 @@ public sealed class Plugin : Renga.IPlugin
     private Renga.IUIPanelExtension? _panel;
     private readonly List<Renga.ActionEventSource> _eventSources = new();
     private string _pluginFolder = "";
+    private MainForm? _window;   // единственное немодальное окно плагина
+
+    /// <summary>Обёртка HWND главного окна Renga, чтобы окно плагина было им «владелось».</summary>
+    private sealed class RengaOwner(IntPtr handle) : System.Windows.Forms.IWin32Window
+    {
+        public IntPtr Handle { get; } = handle;
+    }
 
     public bool Initialize(string pluginFolder)
     {
@@ -54,6 +61,8 @@ public sealed class Plugin : Renga.IPlugin
 
     public void Stop()
     {
+        try { _window?.Close(); } catch { /* окно уже закрыто */ }
+        _window = null;
         foreach (var source in _eventSources) source.Dispose();
         _eventSources.Clear();
         _panel = null;
@@ -89,8 +98,17 @@ public sealed class Plugin : Renga.IPlugin
                 return;
             }
 
-            // Открываем окно-хаб. Модель читается внутри формы (по кнопке в «Обзоре» запускается расчёт),
-            // ничего не считаем и не меняем автоматически. Форма зависит только от ядра и делегатов.
+            // Одно окно на сессию: повторное нажатие кнопки — просто активирует существующее.
+            if (_window is { IsDisposed: false })
+            {
+                _window.ReloadModel();
+                _window.WindowState = System.Windows.Forms.FormWindowState.Normal;
+                _window.Activate();
+                return;
+            }
+
+            // Немодальное окно-хаб. Владелец — главное окно Renga (окно поверх Renga, сворачивается
+            // вместе с ней), но Renga остаётся интерактивной: можно работать в программе параллельно.
             var gateway = new RengaModelGateway(_application);
             var ctx = new PluginContext
             {
@@ -99,8 +117,10 @@ public sealed class Plugin : Renga.IPlugin
                 ApplyChanges = null,        // режим только анализа: запись отключена
                 SelectInRenga = null,       // переход к объекту подключим после сверки Selection API
             };
-            using var form = new MainForm(ctx);
-            form.ShowDialog();
+            _window = new MainForm(ctx);
+            _window.FormClosed += (_, _) => _window = null;
+            var owner = new RengaOwner((IntPtr)_application.GetMainWindowHandle());
+            _window.Show(owner);
         }
         catch (Exception ex)
         {
