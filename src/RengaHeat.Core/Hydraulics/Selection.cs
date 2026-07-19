@@ -21,23 +21,41 @@ public static class PipeSizing
 {
     public static PipeSizingResult SelectDiameter(
         PipeCatalog catalog, string series, double massFlowKgS, double meanTemperatureC,
-        SizingConstraints constraints, FrictionMethod method = FrictionMethod.Churchill)
+        SizingConstraints constraints, FrictionMethod method = FrictionMethod.Churchill) =>
+        SelectDiameter(catalog.BySeries(series).ToList(), massFlowKgS, meanTemperatureC, constraints, method,
+            $"серии «{series}»");
+
+    /// <summary>
+    /// Подбор по произвольному списку типоразмеров (объединённые серии — например, стальные ВГП
+    /// до Ду50 и электросварные выше). Берётся наименьший диаметр, где скорость и удельные потери
+    /// в пределах лимитов; при нулевом расходе — наименьший типоразмер. Ряд сортируется по d_вн.
+    /// </summary>
+    public static PipeSizingResult SelectDiameter(
+        IReadOnlyList<PipeSeriesItem> candidateList, double massFlowKgS, double meanTemperatureC,
+        SizingConstraints constraints, FrictionMethod method = FrictionMethod.Churchill,
+        string? seriesLabel = null)
     {
-        var candidates = catalog.BySeries(series).ToList();
+        var candidates = candidateList.OrderBy(i => i.InnerDiameterM).ToList();
+        var label = seriesLabel ?? "каталога";
         if (candidates.Count == 0)
-            return new PipeSizingResult(null, 0, 0, false, $"В каталоге нет серии «{series}».");
+            return new PipeSizingResult(null, 0, 0, false, $"Нет типоразмеров {label}.");
 
         if (constraints.FixedDn is { } fixedDn)
         {
             var fixedPipe = candidates.FirstOrDefault(c => c.Dn == fixedDn);
             if (fixedPipe is null)
                 return new PipeSizingResult(null, 0, 0, false,
-                    $"Зафиксированный DN{fixedDn} отсутствует в серии «{series}».");
+                    $"Зафиксированный DN{fixedDn} отсутствует у {label}.");
             var (v, r) = Evaluate(fixedPipe, massFlowKgS, meanTemperatureC, method);
             var ok = v <= constraints.MaxVelocityMS && r <= constraints.MaxSpecificLossPaM;
             return new PipeSizingResult(fixedPipe, v, r, ok,
                 ok ? null : $"DN{fixedDn} зафиксирован, но нарушает лимиты (v={v:0.00} м/с, R={r:0} Па/м).");
         }
+
+        // Нулевой расход (обесточенная ветвь/ноль нагрузки): диаметр по формуле не определить —
+        // берём наименьший типоразмер, отметив что подбор не по лимитам.
+        if (massFlowKgS <= 1e-9)
+            return new PipeSizingResult(candidates[0], 0, 0, true, null);
 
         foreach (var pipe in candidates)
         {
@@ -52,7 +70,7 @@ public static class PipeSizing
             : candidates[^1];
         var (lv, lr) = Evaluate(last, massFlowKgS, meanTemperatureC, method);
         return new PipeSizingResult(last, lv, lr, false,
-            $"Ни один типоразмер серии «{series}»" +
+            $"Ни один типоразмер {label}" +
             (constraints.MaxDn is { } m ? $" (до DN{m})" : "") +
             $" не проходит по лимитам: наибольший DN{last.Dn} даёт v={lv:0.00} м/с, R={lr:0} Па/м.");
     }

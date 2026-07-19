@@ -1,3 +1,4 @@
+using RengaHeat.Core.Catalogs;
 using RengaHeat.Core.Hydraulics;
 using Xunit;
 
@@ -5,6 +6,43 @@ namespace RengaHeat.Core.Tests;
 
 public class HydraulicsTests
 {
+    [Fact]
+    public void PipeSizing_PicksSmallestDnWithinLimits()
+    {
+        var cat = PipeCatalog.CreateDefault();
+        var steel = cat.BySeries("ВГП ГОСТ 3262").Concat(cat.BySeries("Электросварная ГОСТ 10704")).ToList();
+        // Малый расход должен пройти на малом DN, большой — потребовать большего.
+        var small = PipeSizing.SelectDiameter(steel, 0.05, 70, new SizingConstraints(1.2, 250));
+        var big = PipeSizing.SelectDiameter(steel, 3.0, 70, new SizingConstraints(1.2, 250));
+        Assert.True(small.Satisfied);
+        Assert.True(big.Satisfied);
+        Assert.True(big.Pipe!.Dn > small.Pipe!.Dn);       // больший расход — больший диаметр
+        Assert.True(big.VelocityMS <= 1.2 + 1e-6);         // в пределах лимита скорости
+        Assert.True(big.SpecificLossPaM <= 250 + 1e-6);    // в пределах лимита удельных потерь
+    }
+
+    [Fact]
+    public void PipeSizing_TransitionsFromVgpToElectrowelded()
+    {
+        var cat = PipeCatalog.CreateDefault();
+        var steel = cat.BySeries("ВГП ГОСТ 3262").Concat(cat.BySeries("Электросварная ГОСТ 10704")).ToList();
+        // Очень большой расход — объединённый ряд должен уйти в электросварные (Ду>50).
+        var pick = PipeSizing.SelectDiameter(steel, 8.0, 70, new SizingConstraints(1.2, 250));
+        Assert.NotNull(pick.Pipe);
+        Assert.True(pick.Pipe!.Dn > 50);
+        Assert.Equal("Электросварная ГОСТ 10704", pick.Pipe!.Series);
+    }
+
+    [Fact]
+    public void PipeSizing_ZeroFlow_ReturnsSmallestWithoutError()
+    {
+        var cat = PipeCatalog.CreateDefault();
+        var steel = cat.BySeries("ВГП ГОСТ 3262").ToList();
+        var pick = PipeSizing.SelectDiameter(steel, 0, 70, new SizingConstraints(1.2, 250));
+        Assert.True(pick.Satisfied);
+        Assert.Equal(15, pick.Pipe!.Dn);
+    }
+
     [Fact]
     public void MassFlow_FromLoad_Matches_Formula()
     {

@@ -14,12 +14,16 @@ public static class Reports
     public static string SegmentsCsv(CalculationResult result)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("Участок;Система;Расход_кг/ч;Скорость_м/с;Удельные_Па/м;Длина_м;Линейные_Па;Местные_Па;Реверс");
+        sb.AppendLine("Участок;Система;Расход_кг/ч;Скорость_м/с;Лимит_v;Удельные_Па/м;Лимит_R;" +
+                      "Ду_модель;Ду_рекоменд;Серия;Превышение;Реверс");
         foreach (var s in result.Segments)
             sb.AppendLine(string.Join(';',
                 Esc(s.ObjectName), Esc(s.Grouping ?? ""),
-                F(s.MassFlowKgS * 3600, 1), F(s.VelocityMS, 3), F(s.SpecificLossPaM, 0),
-                F(s.LengthM, 2), F(s.LinearLossPa, 0), F(s.MinorLossPa, 0),
+                F(s.MassFlowKgS * 3600, 1), F(s.VelocityMS, 3),
+                s.VelocityLimitMS > 0 ? F(s.VelocityLimitMS, 2) : "",
+                F(s.SpecificLossPaM, 0), s.SpecificLossLimitPaM > 0 ? F(s.SpecificLossLimitPaM, 0) : "",
+                s.CurrentDn?.ToString() ?? "", s.RecommendedDn?.ToString() ?? "", Esc(s.RecommendedSeries ?? ""),
+                (s.VelocityExceeded ? "v " : "") + (s.SpecificLossExceeded ? "R" : ""),
                 s.FlowReversed ? "да" : "нет"));
         return sb.ToString();
     }

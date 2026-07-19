@@ -31,7 +31,7 @@ public sealed class MainForm : Form
 
     // Видимый штамп версии плагина. Увеличивайте при каждом изменении UI — по нему сразу
     // видно в заголовке окна, свежая DLL загружена или старая.
-    private const string Build = "сборка 9";
+    private const string Build = "сборка 10";
 
     private readonly Font _ui = new("Segoe UI", 9f);
     private readonly Font _uiBold = new("Segoe UI", 9f, FontStyle.Bold);
@@ -747,11 +747,15 @@ public sealed class MainForm : Form
         {
             var page = new TabPage(r.SourceName) { BackColor = PanelBg, Padding = new Padding(6) };
             var crit = r.Devices.FirstOrDefault(d => d.DeviceId == r.CriticalRingDeviceId)?.DeviceName ?? "—";
+            var recDn = r.Segments.Count(s => s.DiameterChangeRecommended);
+            var velEx = r.Segments.Count(s => s.VelocityExceeded);
+            var lossEx = r.Segments.Count(s => s.SpecificLossExceeded);
             var summary = Card("Итоги контура",
                 $"Суммарный расход: {r.TotalFlowKgS * 3600:0.0} кг/ч        Требуемый напор: {r.RequiredHeadPa / 1000:0.00} кПа\r\n" +
                 $"Критическое кольцо: {crit}\r\n" +
                 $"Насос: {(r.Pump?.Pump is { } pump ? $"{pump.Article} ({r.Pump.DutyFlowM3H:0.00} м³/ч / {r.Pump.DutyHeadKPa:0.0} кПа)" : "не подобран")}        " +
-                $"Сходимость: {(r.Converged ? "да" : "нет")}");
+                $"Сходимость: {(r.Converged ? "да" : "нет")}\r\n" +
+                $"Диаметры: рекомендовано изменить {recDn}; превышений скорости {velEx}, удельных потерь {lossEx}");
             summary.Dock = DockStyle.Top;
 
             var devTable = new DataTable();
@@ -780,8 +784,41 @@ public sealed class MainForm : Form
             var bottomBar = new Panel { Dock = DockStyle.Bottom, Height = 40, BackColor = PanelBg, Padding = new Padding(0, 6, 0, 4) };
             bottomBar.Controls.Add(why);
 
-            page.Controls.Add(grid);        // центр
-            page.Controls.Add(bottomBar);   // низ
+            var devicesPanel = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg };
+            devicesPanel.Controls.Add(grid);        // приборы — центр
+            devicesPanel.Controls.Add(bottomBar);   // «Почему это значение?» — низ
+
+            // Таблица участков: скорость, удельные потери, лимиты СП, подбор диаметра.
+            var segTable = new DataTable();
+            segTable.Columns.Add("Участок");
+            segTable.Columns.Add("Расход, кг/ч");
+            segTable.Columns.Add("Скорость, м/с");
+            segTable.Columns.Add("Лимит v");
+            segTable.Columns.Add("Уд.потери, Па/м");
+            segTable.Columns.Add("Лимит R");
+            segTable.Columns.Add("Ду модель");
+            segTable.Columns.Add("Ду реком.");
+            segTable.Columns.Add("Серия");
+            segTable.Columns.Add("Превышение");
+            segTable.Columns.Add("ObjectId");
+            foreach (var s in r.Segments)
+                segTable.Rows.Add(s.ObjectName, $"{s.MassFlowKgS * 3600:0.0}", $"{s.VelocityMS:0.000}",
+                    s.VelocityLimitMS > 0 ? $"{s.VelocityLimitMS:0.##}" : "", $"{s.SpecificLossPaM:0}",
+                    s.SpecificLossLimitPaM > 0 ? $"{s.SpecificLossLimitPaM:0}" : "",
+                    s.CurrentDn?.ToString() ?? "", s.RecommendedDn?.ToString() ?? "", s.RecommendedSeries ?? "",
+                    (s.VelocityExceeded ? "v " : "") + (s.SpecificLossExceeded ? "R" : ""), s.ObjectId);
+            var segGrid = MakeGrid(segTable, "ObjectId");
+            segGrid.Dock = DockStyle.Fill;
+
+            var innerTabs = new TabControl { Dock = DockStyle.Fill };
+            var devPage = new TabPage("Приборы") { BackColor = PanelBg, Padding = new Padding(4) };
+            devPage.Controls.Add(devicesPanel);
+            var segPage = new TabPage("Участки") { BackColor = PanelBg, Padding = new Padding(4) };
+            segPage.Controls.Add(segGrid);
+            innerTabs.TabPages.Add(devPage);
+            innerTabs.TabPages.Add(segPage);
+
+            page.Controls.Add(innerTabs);   // центр
             page.Controls.Add(summary);     // верх
             tabs.TabPages.Add(page);
         }

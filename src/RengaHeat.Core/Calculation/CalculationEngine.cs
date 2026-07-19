@@ -26,11 +26,22 @@ public sealed record DeviceResult(
     double AvailablePressurePa, double CircuitLossPa,
     bool FlowDirectionReversed, DirectionConfidence Confidence);
 
-/// <summary>Результат по участку трубы.</summary>
+/// <summary>Результат по участку трубы (включая проверку лимитов СП и рекомендуемый диаметр).</summary>
 public sealed record SegmentResult(
     string ObjectId, string ObjectName, string? Grouping,
     double MassFlowKgS, double VelocityMS, double SpecificLossPaM,
-    double LengthM, double LinearLossPa, double MinorLossPa, bool FlowReversed);
+    double LengthM, double LinearLossPa, double MinorLossPa, bool FlowReversed,
+    double VelocityLimitMS = 0, double SpecificLossLimitPaM = 0,
+    int? CurrentDn = null, int? RecommendedDn = null, string? RecommendedSeries = null,
+    double? RecommendedInnerDiameterM = null, bool SizingSatisfied = true)
+{
+    /// <summary>Скорость превышает лимит СП/профиля на этом участке.</summary>
+    public bool VelocityExceeded => VelocityLimitMS > 0 && VelocityMS > VelocityLimitMS + 1e-6;
+    /// <summary>Удельные потери превышают лимит профиля на этом участке.</summary>
+    public bool SpecificLossExceeded => SpecificLossLimitPaM > 0 && SpecificLossPaM > SpecificLossLimitPaM + 1e-6;
+    /// <summary>Рекомендуется изменить диаметр (подобранный отличается от смоделированного).</summary>
+    public bool DiameterChangeRecommended => RecommendedDn is { } rec && CurrentDn is { } cur && rec != cur;
+}
 
 /// <summary>Полный результат расчёта фрагмента сети от одного источника.</summary>
 public sealed class CalculationResult
@@ -53,10 +64,42 @@ public sealed class CalculationResult
 /// Расчётное ядро: связывает граф, решатель, балансировку и подбор.
 /// Полностью независимо от Renga и COM — работает с HeatingModel и делегатами доступа к значениям.
 /// </summary>
-public sealed class CalculationEngine(RequirementsProfile profile, CalculationScenario scenario)
+public sealed class CalculationEngine(RequirementsProfile profile, CalculationScenario scenario,
+    Catalogs.PipeCatalog? pipes = null)
 {
     private readonly Catalogs.ValveCatalog _valves = Catalogs.ValveCatalog.CreateDefault();
     private readonly Catalogs.PumpCatalog _pumps = Catalogs.PumpCatalog.CreateDefault();
+    private readonly Catalogs.PipeCatalog _pipes = pipes ?? Catalogs.PipeCatalog.CreateDefault();
+
+    private static bool IsPipeRole(ObjectRole r) => r is
+        ObjectRole.Pipe or ObjectRole.SupplyMain or ObjectRole.ReturnMain or ObjectRole.Riser
+        or ObjectRole.SupplyManifold or ObjectRole.ReturnManifold or ObjectRole.Unknown;
+
+    /// <summary>Лимит скорости для участка: квартирные кольца — свой лимит, магистрали/стояки — свой (сценарий может переопределить).</summary>
+    private double VelocityLimitFor(NetworkObject o)
+    {
+        if (scenario.VelocityLimitOverrideMS is { } ov) return ov;
+        return o.Context.Apartment is not null ? profile.MaxVelocityApartmentMS : profile.MaxVelocityMainMS;
+    }
+
+    /// <summary>
+    /// Ряд типоразмеров и ограничения для подбора диаметра участка по месту (СП/ЧТУ):
+    /// в квартире — поквартирная серия (PE-Xa) с ограничением Ду; иначе сталь (ВГП до Ду50 +
+    /// электросварные выше — объединённый ряд, переход происходит автоматически по диаметру).
+    /// </summary>
+    private (IReadOnlyList<Catalogs.PipeSeriesItem> Candidates, SizingConstraints Constraints, string Label) SizingFor(NetworkObject o)
+    {
+        var vLimit = VelocityLimitFor(o);
+        var rLimit = profile.MaxSpecificLossPaM;
+        if (o.Context.Apartment is not null)
+        {
+            var apt = _pipes.BySeries(profile.ApartmentPipeSeries).ToList();
+            return (apt, new SizingConstraints(vLimit, rLimit, MaxDn: profile.MaxApartmentPexDn), profile.ApartmentPipeSeries);
+        }
+        var steel = _pipes.BySeries(profile.SteelSmallSeries)
+            .Concat(_pipes.BySeries(profile.SteelLargeSeries)).ToList();
+        return (steel, new SizingConstraints(vLimit, rLimit), "сталь (ВГП + электросварные)");
+    }
 
     /// <summary>
     /// Рассчитать один фрагмент сети от заданного источника.
@@ -120,8 +163,40 @@ public sealed class CalculationEngine(RequirementsProfile profile, CalculationSc
             var rPaM = Friction.DarcyWeisbach(lambda, 1.0, b.InnerDiameterM, rho, v);
             var minor = Friction.MinorLosses(b.ZetaSum, rho, v) +
                         (b.Kv is { } kv && kv > 0 ? Friction.KvPressureDrop(absG / rho * 3600, kv) : 0);
+
+            // Проверка лимитов СП/профиля и подбор диаметра — только для трубных участков.
+            var vLimit = 0.0; var rLimit = 0.0;
+            int? curDn = null, recDn = null; string? recSeries = null; double? recD = null; var sizeOk = true;
+            if (IsPipeRole(b.Object.Role.Role))
+            {
+                vLimit = VelocityLimitFor(b.Object);
+                rLimit = profile.MaxSpecificLossPaM;
+                curDn = b.Object.MaxDn > 0 ? b.Object.MaxDn : null;
+
+                var (candidates, constraints, label) = SizingFor(b.Object);
+                if (candidates.Count > 0)
+                {
+                    var pick = PipeSizing.SelectDiameter(candidates, absG, tMean, constraints, scenario.FrictionMethod, label);
+                    if (pick.Pipe is { } rp) { recDn = rp.Dn; recSeries = rp.Series; recD = rp.InnerDiameterM; }
+                    sizeOk = pick.Satisfied;
+                    if (!pick.Satisfied && pick.Conflict is { } conflict)
+                        findings.Add(new Finding(FindingStatus.Warning, "SIZE-002", conflict, b.Object.Id, b.Object.Context.SystemName));
+                }
+
+                if (vLimit > 0 && v > vLimit + 1e-6)
+                    findings.Add(new Finding(FindingStatus.Warning, "VEL-001",
+                        $"Скорость {v:0.00} м/с на участке «{b.Object.Name}» превышает лимит {vLimit:0.00} м/с " +
+                        $"({(b.Object.Context.Apartment is not null ? "квартирное кольцо" : "магистраль/стояк")}).",
+                        b.Object.Id, b.Object.Context.SystemName));
+                if (rLimit > 0 && rPaM > rLimit + 1e-6)
+                    findings.Add(new Finding(FindingStatus.Warning, "LOSS-001",
+                        $"Удельные потери {rPaM:0} Па/м на участке «{b.Object.Name}» превышают лимит {rLimit:0} Па/м.",
+                        b.Object.Id, b.Object.Context.SystemName));
+            }
+
             segments.Add(new SegmentResult(b.Object.Id, b.Object.Name, b.Object.Context.SystemName,
-                g, v, rPaM, b.LengthM, rPaM * b.LengthM, minor, g < 0));
+                g, v, rPaM, b.LengthM, rPaM * b.LengthM, minor, g < 0,
+                vLimit, rLimit, curDn, recDn, recSeries, recD, sizeOk));
 
             if (g < 0)
                 findings.Add(new Finding(FindingStatus.Assumption, "DIR-002",

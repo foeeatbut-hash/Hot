@@ -1,4 +1,5 @@
 using RengaHeat.Core.Calculation;
+using RengaHeat.Core.Model;
 using RengaHeat.Core.Profiles;
 using RengaHeat.Core.Validation;
 using Xunit;
@@ -26,6 +27,36 @@ public class SessionTests
         Assert.InRange(r.TotalFlowKgS * 3600, 120, 135);
         Assert.NotNull(r.CriticalRingDeviceId);
         Assert.True(r.RequiredHeadPa > 0);
+    }
+
+    [Fact]
+    public void Calculation_ProducesRecommendedDiameters_AndSpLimits()
+    {
+        var outcome = Run(TestScenarios.TwoPipeDeadEnd(3));
+        var segs = outcome.Results[0].Segments;
+        Assert.Contains(segs, s => s.RecommendedDn is not null);   // подбор диаметра выполнен
+        Assert.Contains(segs, s => s.VelocityLimitMS > 0);         // лимиты СП проставлены
+    }
+
+    [Fact]
+    public void UndersizedMain_TriggersVelocityFinding_AndBiggerRecommendedDn()
+    {
+        var b = new ModelBuilder("Скорость");
+        var src = b.Add("ИТП", ObjectRole.HeatSource);
+        var supply = b.AddPipe("Подача", ObjectRole.SupplyMain, dn: 15, innerDiameterM: 0.0125);
+        var rad = b.AddRadiator("Мощный узел", 60000, new BuildingContext(Section: "1", Floor: 1));
+        var ret = b.AddPipe("Обратка", ObjectRole.ReturnMain, dn: 15, innerDiameterM: 0.0125);
+        b.Connect(src, 0, supply, 0);
+        b.Connect(supply, 1, rad, 0);
+        b.Connect(rad, 1, ret, 0);
+        b.Connect(ret, 1, src, 1);
+
+        var outcome = Run(b.Model);
+        // 60 кВт при 80/60 → ~2600 кг/ч через Ду15: скорость сильно выше лимита.
+        Assert.Contains(outcome.AllFindings, f => f.Code == "VEL-001");
+        var seg = outcome.Results[0].Segments.First(s => s.ObjectId == supply.Id);
+        Assert.True(seg.RecommendedDn > 15);   // подбор рекомендует больший диаметр
+        Assert.True(seg.DiameterChangeRecommended);
     }
 
     [Fact]

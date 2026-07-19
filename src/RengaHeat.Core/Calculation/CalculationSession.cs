@@ -105,7 +105,7 @@ public sealed class CalculationSession
         var changeSet = new ChangeSet();
 
         // 5. Расчёт по фрагментам от каждого источника
-        var engine = new CalculationEngine(Profile, Scenario);
+        var engine = new CalculationEngine(Profile, Scenario, PipeCatalog);
         var results = new List<CalculationResult>();
         var supplyC = Profile.HeatingSchedule.SupplyC;
         var returnC = Profile.HeatingSchedule.ReturnC;
@@ -120,7 +120,8 @@ public sealed class CalculationSession
                 deviceFlow: o => DeviceFlow(resolver, o, supplyC, returnC),
                 lengthOf: o => ResolveNumber(resolver, o, StandardFields.PipeLength, 0),
                 innerDiameterOf: o => ResolveDiameter(resolver, o),
-                roughnessOf: o => ResolveNumber(resolver, o, StandardFields.PipeRoughness, 0.0002),
+                roughnessOf: o => { var rv = resolver.Resolve(o, StandardFields.PipeRoughness);
+                    return rv.HasValue ? rv.Number!.Value : DefaultRoughness(o); },
                 zetaOf: o => ResolveNumber(resolver, o, StandardFields.LocalResistanceZeta, 0),
                 kvOf: o => ResolveOptional(resolver, o, StandardFields.ValveKv),
                 deviceKvOf: o => ResolveOptional(resolver, o, StandardFields.ValveKv) ?? 2.0,
@@ -137,6 +138,12 @@ public sealed class CalculationSession
                 changeSet.Add(new ModelChange(ChangeKind.SetValvePreset, bal.DeviceObjectId,
                     model.Get(bal.DeviceObjectId).Name, "Преднастройка n", null, bal.PresetN,
                     "Балансировка кольца"));
+            // Рекомендуемые диаметры труб по расчёту (подбор по расходу под лимиты СП/профиля).
+            foreach (var seg in result.Segments.Where(s => s.DiameterChangeRecommended))
+                changeSet.Add(new ModelChange(ChangeKind.SetPipeStyle, seg.ObjectId, seg.ObjectName,
+                    "Диаметр (Ду)", seg.CurrentDn, seg.RecommendedDn,
+                    $"Подбор по расходу: серия «{seg.RecommendedSeries}», лимиты v≤{seg.VelocityLimitMS:0.##} м/с, R≤{seg.SpecificLossLimitPaM:0} Па/м",
+                    ApiSupported: false));
         }
 
         var outcome = new SessionOutcome
@@ -185,6 +192,19 @@ public sealed class CalculationSession
             if (item is not null) return item.InnerDiameterM;
         }
         return 0.0125; // черновой диаметр по умолчанию (DN15), фиксируется как допущение
+    }
+
+    /// <summary>
+    /// Шероховатость по материалу, когда не задана явно: поквартирные полимерные трубы (PE-Xa) —
+    /// гладкие (7e-6 м), стальные — 0.2 мм (СП/справочные данные для новых ВГП).
+    /// </summary>
+    private static double DefaultRoughness(NetworkObject o)
+    {
+        var isPolymer = o.Context.Apartment is not null ||
+            (o.Material is { } m && (m.Contains("PE", StringComparison.OrdinalIgnoreCase) ||
+                                     m.Contains("полим", StringComparison.OrdinalIgnoreCase) ||
+                                     m.Contains("пласт", StringComparison.OrdinalIgnoreCase)));
+        return isPolymer ? 7e-6 : 0.0002;
     }
 
     private static double ResolveNumber(ValueResolver resolver, NetworkObject o, FieldDefinition field, double fallback)
