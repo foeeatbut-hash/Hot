@@ -7,7 +7,8 @@
 -->
 <RengaPlugin>
   <Name>RengaHeat — гидравлический расчёт отопления</Name>
-  <Version>0.1.0</Version>
+  <!-- Renga требует версию из двух чисел (X.Y). Трёхчастный формат (0.1.0) отбраковывается. -->
+  <Version>1.0</Version>
   <RequiredAPIVersion>2.48</RequiredAPIVersion>
   <Vendor>RengaHeat</Vendor>
   <Copyright>RengaHeat</Copyright>
