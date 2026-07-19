@@ -29,11 +29,15 @@ public sealed class MainForm : Form
 
     // Видимый штамп версии плагина. Увеличивайте при каждом изменении UI — по нему сразу
     // видно в заголовке окна, свежая DLL загружена или старая.
-    private const string Build = "сборка 5";
+    private const string Build = "сборка 6";
 
     private readonly Font _ui = new("Segoe UI", 9f);
     private readonly Font _uiBold = new("Segoe UI", 9f, FontStyle.Bold);
     private readonly Font _h1 = new("Segoe UI", 10.5f, FontStyle.Bold);
+    // Segoe MDL2 Assets — системный шрифт значков Windows (10/11); даёт компактные векторные
+    // иконки тулбара без подписей, как «+ / копия / карандаш / крестик» в диалогах Renga.
+    private readonly Font _iconFont = new("Segoe MDL2 Assets", 13f);
+    private readonly ToolTip _tip = new() { AutoPopDelay = 6000, InitialDelay = 350, ReshowDelay = 100 };
 
     private readonly PluginContext _ctx;
     private readonly SessionConfig _config = SessionConfig.Load();
@@ -82,14 +86,16 @@ public sealed class MainForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));   // навигация + контент
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));   // нижняя панель
 
-        // Тулбар (плоские кнопки-действия, как в диалогах Renga)
-        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = NavBg, Padding = new Padding(6, 5, 0, 0), WrapContents = false };
+        // Тулбар — компактные квадратные значки без подписей (подсказка по наведению),
+        // как ряд «+ / копия / карандаш / крестик» в диалогах Renga.
+        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = NavBg, Padding = new Padding(4, 4, 0, 0), WrapContents = false };
         toolbar.Paint += (_, e) => e.Graphics.DrawLine(new Pen(BorderColor), 0, toolbar.Height - 1, toolbar.Width, toolbar.Height - 1);
-        var runBtn = ToolButton("▶  Рассчитать");
+        var runBtn = IconToolButton("", "Рассчитать");     // Play
         runBtn.Click += (_, _) => RunCalculation();
-        var reloadBtn = ToolButton("⭯  Обновить модель");
+        var reloadBtn = IconToolButton("", "Обновить модель");  // Refresh
         reloadBtn.Click += (_, _) => ReloadModel();
         toolbar.Controls.Add(runBtn);
+        toolbar.Controls.Add(Separator());
         toolbar.Controls.Add(reloadBtn);
         root.Controls.Add(toolbar, 0, 0);
         root.SetColumnSpan(toolbar, 2);
@@ -144,18 +150,32 @@ public sealed class MainForm : Form
         return host;
     }
 
-    private Button ToolButton(string text)
+    /// <summary>
+    /// Компактная квадратная кнопка-значок без подписи (значок Segoe MDL2 Assets, подсказка по
+    /// наведению) — как «+ / копия / карандаш / крестик» в тулбарах диалогов Renga. TabStop
+    /// выключен, чтобы после клика не оставался рамка-фокус — тулбарные значки его не показывают.
+    /// </summary>
+    private Button IconToolButton(string glyph, string tooltip)
     {
         var b = new Button
         {
-            Text = text, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Height = 28,
-            Font = _ui, FlatStyle = FlatStyle.Flat, BackColor = NavBg, ForeColor = TextDark,
-            Margin = new Padding(2, 0, 0, 0), Padding = new Padding(8, 3, 8, 3), Cursor = Cursors.Hand,
+            Text = glyph, Font = _iconFont, Width = 32, Height = 30,
+            FlatStyle = FlatStyle.Flat, BackColor = NavBg, ForeColor = TextDark,
+            TextAlign = ContentAlignment.MiddleCenter, Margin = new Padding(0), Cursor = Cursors.Hand,
+            TabStop = false, UseCompatibleTextRendering = false,
         };
         b.FlatAppearance.BorderSize = 0;
         b.FlatAppearance.MouseOverBackColor = ToolHover;
+        b.FlatAppearance.MouseDownBackColor = Color.FromArgb(0xCC, 0xDA, 0xE8);
+        _tip.SetToolTip(b, tooltip);
         return b;
     }
+
+    /// <summary>Тонкий вертикальный разделитель между группами значков тулбара.</summary>
+    private Panel Separator() => new()
+    {
+        Width = 1, Height = 20, Margin = new Padding(4, 5, 4, 5), BackColor = BorderColor,
+    };
 
     /// <summary>Перечитать модель из Renga (окно немодальное — модель могла измениться).</summary>
     public void ReloadModel()
