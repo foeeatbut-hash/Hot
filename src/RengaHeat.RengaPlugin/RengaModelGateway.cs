@@ -31,6 +31,20 @@ public sealed class RengaModelGateway : IModelGateway
 
     public RengaModelGateway(Renga.IApplication application) => _application = application;
 
+    /// <summary>
+    /// Инженерные типы объектов Renga (ОВ/ВК/ЭОМ): трубы, фитинги, арматура, воздуховоды,
+    /// оборудование, приборы. Архитектура (стены, полы, двери, материалы, помещения) не читается.
+    /// </summary>
+    private static readonly HashSet<Guid> EngineeringTypes = new()
+    {
+        Renga.EntityTypes.Pipe, Renga.EntityTypes.PipeFitting, Renga.EntityTypes.PipeAccessory,
+        Renga.EntityTypes.Duct, Renga.EntityTypes.DuctFitting, Renga.EntityTypes.DuctAccessory,
+        Renga.EntityTypes.MechanicalEquipment, Renga.EntityTypes.Equipment,
+        Renga.EntityTypes.PlumbingFixture, Renga.EntityTypes.LightingFixture,
+        Renga.EntityTypes.WiringAccessory, Renga.EntityTypes.ElectricDistributionBoard,
+        Renga.EntityTypes.ElectricalCircuitLine,
+    };
+
     public GatewayCapabilities Capabilities { get; } = new(
         CanWriteProperties: false, CanChangePipeStyle: false, CanWriteValvePreset: false,
         CanCreateMarks: false, CanFixDirection: false, SupportsUndo: false);
@@ -55,6 +69,7 @@ public sealed class RengaModelGateway : IModelGateway
             {
                 var mo = objects.GetByIndex(i);
                 if (mo is null) continue;
+                if (!EngineeringTypes.Contains(mo.ObjectType)) continue;   // только инженерные объекты
                 var obj = new NetworkObject
                 {
                     Id = mo.UniqueIdS,

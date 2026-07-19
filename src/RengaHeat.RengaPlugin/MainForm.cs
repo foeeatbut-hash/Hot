@@ -17,20 +17,19 @@ namespace RengaHeat.RengaPlugin;
 /// </summary>
 public sealed class MainForm : Form
 {
-    // Палитра в духе интерфейса Renga: светлый фон, спокойный синий акцент.
-    private static readonly Color Accent = Color.FromArgb(0x2F, 0x80, 0xED);
-    private static readonly Color NavBg = Color.FromArgb(0xF4, 0xF6, 0xF8);
-    private static readonly Color PanelBg = Color.White;
-    private static readonly Color BorderColor = Color.FromArgb(0xE1, 0xE5, 0xEA);
-    private static readonly Color TextDark = Color.FromArgb(0x25, 0x2A, 0x31);
-    private static readonly Color TextMuted = Color.FromArgb(0x6B, 0x72, 0x80);
-    private static readonly Color SelBg = Color.FromArgb(0xE8, 0xF0, 0xFE);
+    // Нативная светлая палитра Renga (Qt-стиль): системный серый фон, белые списки/таблицы,
+    // тонкие серые рамки, стандартное синее выделение.
+    private static readonly Color NavBg = SystemColors.Control;        // тулбар, статус-бар, фон окна
+    private static readonly Color PanelBg = Color.White;               // контент, списки, таблицы
+    private static readonly Color BorderColor = Color.FromArgb(0xAB, 0xAB, 0xAB);
+    private static readonly Color TextDark = SystemColors.ControlText;
+    private static readonly Color TextMuted = Color.FromArgb(0x60, 0x60, 0x60);
+    private static readonly Color SelBg = Color.FromArgb(0xCC, 0xE4, 0xF7);   // классическое выделение Windows
+    private static readonly Color ToolHover = Color.FromArgb(0xE0, 0xE6, 0xEE);
 
-    private readonly Font _ui = new("Segoe UI", 9.5f);
-    private readonly Font _uiBold = new("Segoe UI", 9.5f, FontStyle.Bold);
-    private readonly Font _navFont = new("Segoe UI", 10f);
-    private readonly Font _navFontSel = new("Segoe UI", 10f, FontStyle.Bold);
-    private readonly Font _h1 = new("Segoe UI", 13f, FontStyle.Bold);
+    private readonly Font _ui = new("Segoe UI", 9f);
+    private readonly Font _uiBold = new("Segoe UI", 9f, FontStyle.Bold);
+    private readonly Font _h1 = new("Segoe UI", 10.5f, FontStyle.Bold);
 
     private readonly PluginContext _ctx;
     private readonly SessionConfig _config = SessionConfig.Load();
@@ -45,11 +44,10 @@ public sealed class MainForm : Form
     private readonly Panel _content = new() { Dock = DockStyle.Fill, BackColor = PanelBg };
     private readonly Label _status = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(14, 0, 0, 0) };
 
-    private static readonly (string Title, string Glyph)[] Sections =
+    private static readonly string[] Sections =
     {
-        ("Обзор", "▦"), ("Профиль", "⚙"), ("Классификатор", "▤"), ("Сопоставление", "⇄"),
-        ("Проверка модели", "✓"), ("Расчёт", "∑"), ("Балансировка", "≡"),
-        ("Предпросмотр изменений", "✎"), ("Отчёты и экспорт", "⭳"),
+        "Обзор", "Профиль", "Классификатор", "Сопоставление",
+        "Проверка модели", "Расчёт", "Балансировка", "Предпросмотр изменений", "Отчёты и экспорт",
     };
 
     public MainForm(PluginContext ctx)
@@ -60,7 +58,7 @@ public sealed class MainForm : Form
         Height = 720;
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(880, 580);
-        BackColor = PanelBg;
+        BackColor = NavBg;
         Font = _ui;
         try { Icon = SystemIcons.Application; } catch { /* без иконки — не критично */ }
 
@@ -71,75 +69,69 @@ public sealed class MainForm : Form
 
     private void BuildLayout()
     {
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3, BackColor = PanelBg };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 232));
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3, BackColor = NavBg };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 208));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));   // шапка
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));   // тулбар
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));   // навигация + контент
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));   // статус-бар
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));   // нижняя панель
 
-        // Шапка приложения
-        var header = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg };
-        header.Paint += (_, e) => e.Graphics.DrawLine(new Pen(BorderColor), 0, header.Height - 1, header.Width, header.Height - 1);
-        var title = new Label
-        {
-            Text = "RengaHeat", AutoSize = true, ForeColor = Accent,
-            Font = new Font("Segoe UI", 15f, FontStyle.Bold), Location = new Point(16, 8),
-        };
-        var subtitle = new Label
-        {
-            Text = "гидравлический расчёт систем отопления", AutoSize = true, ForeColor = TextMuted,
-            Font = _ui, Location = new Point(18, 34),
-        };
-        header.Controls.Add(title);
-        header.Controls.Add(subtitle);
-        root.Controls.Add(header, 0, 0);
-        root.SetColumnSpan(header, 2);
+        // Тулбар (плоские кнопки-действия, как в диалогах Renga)
+        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = NavBg, Padding = new Padding(6, 5, 0, 0), WrapContents = false };
+        toolbar.Paint += (_, e) => e.Graphics.DrawLine(new Pen(BorderColor), 0, toolbar.Height - 1, toolbar.Width, toolbar.Height - 1);
+        var runBtn = ToolButton("▶  Рассчитать");
+        runBtn.Click += (_, _) => RunCalculation();
+        var reloadBtn = ToolButton("⭯  Обновить модель");
+        reloadBtn.Click += (_, _) => ReloadModel();
+        toolbar.Controls.Add(runBtn);
+        toolbar.Controls.Add(reloadBtn);
+        root.Controls.Add(toolbar, 0, 0);
+        root.SetColumnSpan(toolbar, 2);
 
-        // Навигация (owner-drawn)
+        // Навигация — нативный список (белый фон, стандартное синее выделение)
         _nav.Dock = DockStyle.Fill;
         _nav.BorderStyle = BorderStyle.None;
-        _nav.BackColor = NavBg;
-        _nav.DrawMode = DrawMode.OwnerDrawFixed;
-        _nav.ItemHeight = 42;
+        _nav.BackColor = PanelBg;
+        _nav.Font = _ui;
+        _nav.ItemHeight = 24;
         _nav.IntegralHeight = false;
-        foreach (var s in Sections) _nav.Items.Add(s.Title);
-        _nav.DrawItem += NavDrawItem;
+        foreach (var s in Sections) _nav.Items.Add(s);
         _nav.SelectedIndexChanged += (_, _) => { if (_nav.SelectedItem is string s) ShowSection(s); };
-        var navHost = new Panel { Dock = DockStyle.Fill, BackColor = NavBg, Padding = new Padding(0, 6, 0, 0) };
+        var navHost = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg };
         navHost.Paint += (_, e) => e.Graphics.DrawLine(new Pen(BorderColor), navHost.Width - 1, 0, navHost.Width - 1, navHost.Height);
         navHost.Controls.Add(_nav);
         root.Controls.Add(navHost, 0, 1);
 
         root.Controls.Add(_content, 1, 1);
 
-        // Статус-бар
+        // Нижняя панель: статус слева, кнопка «Закрыть» справа (как OK/Отмена в Renga)
+        var bottom = new Panel { Dock = DockStyle.Fill, BackColor = NavBg };
+        bottom.Paint += (_, e) => e.Graphics.DrawLine(new Pen(BorderColor), 0, 0, bottom.Width, 0);
         _status.Font = _ui;
         _status.ForeColor = TextMuted;
-        var statusHost = new Panel { Dock = DockStyle.Fill, BackColor = NavBg };
-        statusHost.Paint += (_, e) => e.Graphics.DrawLine(new Pen(BorderColor), 0, 0, statusHost.Width, 0);
-        statusHost.Controls.Add(_status);
-        root.Controls.Add(statusHost, 0, 2);
-        root.SetColumnSpan(statusHost, 2);
+        var closeBtn = new Button { Text = "Закрыть", Width = 96, Height = 26, FlatStyle = FlatStyle.System, Font = _ui, Dock = DockStyle.Right };
+        closeBtn.Click += (_, _) => Close();
+        var closeHost = new Panel { Dock = DockStyle.Right, Width = 112, Padding = new Padding(8, 7, 8, 7), BackColor = NavBg };
+        closeHost.Controls.Add(closeBtn);
+        bottom.Controls.Add(closeHost);
+        bottom.Controls.Add(_status);
+        root.Controls.Add(bottom, 0, 2);
+        root.SetColumnSpan(bottom, 2);
 
         Controls.Add(root);
     }
 
-    private void NavDrawItem(object? sender, DrawItemEventArgs e)
+    private Button ToolButton(string text)
     {
-        if (e.Index < 0) return;
-        var selected = (e.State & DrawItemState.Selected) != 0;
-        using (var bg = new SolidBrush(selected ? PanelBg : NavBg))
-            e.Graphics.FillRectangle(bg, e.Bounds);
-        if (selected)
-            using (var bar = new SolidBrush(Accent))
-                e.Graphics.FillRectangle(bar, e.Bounds.X, e.Bounds.Y, 4, e.Bounds.Height);
-
-        var glyph = Sections[e.Index].Glyph;
-        var text = Sections[e.Index].Title;
-        var rect = new Rectangle(e.Bounds.X + 14, e.Bounds.Y, e.Bounds.Width - 16, e.Bounds.Height);
-        TextRenderer.DrawText(e.Graphics, glyph + "   " + text, selected ? _navFontSel : _navFont, rect,
-            selected ? Accent : TextDark, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        var b = new Button
+        {
+            Text = text, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Height = 28,
+            Font = _ui, FlatStyle = FlatStyle.Flat, BackColor = NavBg, ForeColor = TextDark,
+            Margin = new Padding(2, 0, 0, 0), Padding = new Padding(8, 3, 8, 3), Cursor = Cursors.Hand,
+        };
+        b.FlatAppearance.BorderSize = 0;
+        b.FlatAppearance.MouseOverBackColor = ToolHover;
+        return b;
     }
 
     /// <summary>Перечитать модель из Renga (окно немодальное — модель могла измениться).</summary>
@@ -194,7 +186,7 @@ public sealed class MainForm : Form
 
     private Panel SectionHeader(string section)
     {
-        var panel = new Panel { Dock = DockStyle.Top, Height = 50, BackColor = PanelBg, Padding = new Padding(20, 0, 20, 0) };
+        var panel = new Panel { Dock = DockStyle.Top, Height = 34, BackColor = PanelBg, Padding = new Padding(16, 0, 16, 0) };
         panel.Paint += (_, e) => e.Graphics.DrawLine(new Pen(BorderColor), 0, panel.Height - 1, panel.Width, panel.Height - 1);
         panel.Controls.Add(new Label { Text = section, Dock = DockStyle.Fill, Font = _h1, ForeColor = TextDark, TextAlign = ContentAlignment.MiddleLeft });
         return panel;
@@ -206,20 +198,14 @@ public sealed class MainForm : Form
     {
         var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
 
-        var bar = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0, 0, 0, 10) };
-        var runBtn = PrimaryButton("▶  Рассчитать");
-        runBtn.Click += (_, _) => RunCalculation();
-        var reloadBtn = SecondaryButton("⭯  Обновить модель");
-        reloadBtn.Click += (_, _) => ReloadModel();
-        bar.Controls.Add(runBtn);
-        bar.Controls.Add(reloadBtn);
-        panel.Controls.Add(bar);
-
         if (_model is null)
         {
-            panel.Controls.Add(Info("Модель не загружена. Откройте проект Renga и нажмите «Обновить модель»."));
+            panel.Controls.Add(Info("Модель не загружена. Откройте проект Renga и нажмите «Обновить модель» на панели сверху."));
             return panel;
         }
+
+        panel.Controls.Add(Info("Инженерные объекты модели (трубы, фитинги, арматура, оборудование, приборы). " +
+            "Нажмите «Рассчитать» на панели сверху, когда роли назначены."));
 
         var byType = _model.Objects.Values
             .GroupBy(o => string.IsNullOrEmpty(o.RengaTypeId) ? "(тип не задан)" : o.RengaTypeId)
@@ -583,30 +569,18 @@ public sealed class MainForm : Form
 
     // ---------- Вспомогательное ----------
 
-    private Button PrimaryButton(string text)
+    // Нативные кнопки Windows (как OK/Отмена в диалогах Renga).
+    private Button PrimaryButton(string text) => new()
     {
-        var b = new Button
-        {
-            Text = text, AutoSize = false, Height = 38, Width = 240, Margin = new Padding(0, 0, 8, 0),
-            Font = _uiBold, BackColor = Accent, ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
-        };
-        b.FlatAppearance.BorderSize = 0;
-        b.FlatAppearance.MouseOverBackColor = Color.FromArgb(0x1E, 0x6F, 0xD9);
-        return b;
-    }
+        Text = text, AutoSize = false, Height = 30, Width = 230, Margin = new Padding(0, 0, 8, 0),
+        Font = _ui, FlatStyle = FlatStyle.System, UseVisualStyleBackColor = true,
+    };
 
-    private Button SecondaryButton(string text)
+    private Button SecondaryButton(string text) => new()
     {
-        var b = new Button
-        {
-            Text = text, AutoSize = false, Height = 38, Width = 200, Margin = new Padding(0, 0, 8, 0),
-            Font = _ui, BackColor = PanelBg, ForeColor = TextDark, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
-        };
-        b.FlatAppearance.BorderColor = BorderColor;
-        b.FlatAppearance.BorderSize = 1;
-        b.FlatAppearance.MouseOverBackColor = NavBg;
-        return b;
-    }
+        Text = text, AutoSize = false, Height = 30, Width = 200, Margin = new Padding(0, 0, 8, 0),
+        Font = _ui, FlatStyle = FlatStyle.System, UseVisualStyleBackColor = true,
+    };
 
     private Button SaveButton(string text, string defaultName, string filter, Func<string> content)
     {
@@ -630,10 +604,10 @@ public sealed class MainForm : Form
 
     private Panel Card(string title, string body)
     {
-        var card = new Panel { AutoSize = true, BackColor = Color.FromArgb(0xFB, 0xFC, 0xFD), Margin = new Padding(0, 0, 0, 12), Padding = new Padding(14, 10, 14, 12) };
+        var card = new Panel { AutoSize = true, BackColor = PanelBg, Margin = new Padding(0, 0, 0, 10), Padding = new Padding(12, 8, 12, 10) };
         card.Paint += (_, e) => e.Graphics.DrawRectangle(new Pen(BorderColor), 0, 0, card.Width - 1, card.Height - 1);
         var flow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
-        flow.Controls.Add(new Label { Text = title, AutoSize = true, Font = _uiBold, ForeColor = Accent, Margin = new Padding(0, 0, 0, 4) });
+        flow.Controls.Add(new Label { Text = title, AutoSize = true, Font = _uiBold, ForeColor = TextDark, Margin = new Padding(0, 0, 0, 4) });
         flow.Controls.Add(new Label { Text = body, AutoSize = true, Font = _ui, ForeColor = TextDark, MaximumSize = new Size(720, 0) });
         card.Controls.Add(flow);
         return card;
@@ -672,26 +646,22 @@ public sealed class MainForm : Form
 
     private void StyleGrid(DataGridView grid)
     {
-        grid.BorderStyle = BorderStyle.None;
+        grid.BorderStyle = BorderStyle.FixedSingle;
         grid.BackgroundColor = PanelBg;
-        grid.GridColor = BorderColor;
-        grid.EnableHeadersVisualStyles = false;
-        grid.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.Single;
+        grid.GridColor = Color.FromArgb(0xD6, 0xD6, 0xD6);
+        grid.EnableHeadersVisualStyles = true;   // нативные серые заголовки в стиле Renga
         grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
-        grid.ColumnHeadersHeight = 34;
-        grid.ColumnHeadersDefaultCellStyle.BackColor = NavBg;
-        grid.ColumnHeadersDefaultCellStyle.ForeColor = TextDark;
-        grid.ColumnHeadersDefaultCellStyle.Font = _uiBold;
-        grid.ColumnHeadersDefaultCellStyle.Padding = new Padding(6, 0, 6, 0);
+        grid.ColumnHeadersHeight = 26;
+        grid.ColumnHeadersDefaultCellStyle.Font = _ui;
+        grid.ColumnHeadersDefaultCellStyle.Padding = new Padding(4, 0, 4, 0);
         grid.DefaultCellStyle.Font = _ui;
         grid.DefaultCellStyle.ForeColor = TextDark;
         grid.DefaultCellStyle.SelectionBackColor = SelBg;
         grid.DefaultCellStyle.SelectionForeColor = TextDark;
-        grid.DefaultCellStyle.Padding = new Padding(6, 3, 6, 3);
-        grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(0xFA, 0xFB, 0xFC);
+        grid.DefaultCellStyle.Padding = new Padding(4, 2, 4, 2);
         grid.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal;
         grid.AllowUserToResizeRows = false;
-        grid.RowTemplate.Height = 26;
+        grid.RowTemplate.Height = 22;
     }
 
     private Label Info(string text) => new()
