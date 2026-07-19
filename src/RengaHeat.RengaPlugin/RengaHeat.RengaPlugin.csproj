@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Проект Renga-адаптера и точки входа плагина.
+
+    ВАЖНО: этот проект НАМЕРЕННО не включён в RengaHeat.sln, потому что требует
+    установленного Renga SDK (сборка Renga.NET / COM-интеропа Renga), которого нет
+    в среде непрерывной сборки ядра. Ядро (RengaHeat.Core) собирается и тестируется
+    без Renga; данный проект собирается отдельно на машине с установленным Renga.
+
+    Как собрать (Windows, установлен Renga Professional + Renga SDK):
+      1) Укажите путь к Renga SDK через свойство RengaSdkDir (см. ниже) либо
+         положите Renga.NET.dll рядом и поправьте HintPath.
+      2) dotnet build src/RengaHeat.RengaPlugin/RengaHeat.RengaPlugin.csproj -c Release
+      3) Полученную DLL и RengaHeat.rndesc поместите в папку плагинов Renga.
+
+    Целевой фреймворк уточните по вашей версии Renga SDK: современные версии Renga
+    поддерживают .NET, но конкретная версия (net48 / net6 / net8) зависит от сборки.
+    По умолчанию берём net8.0-windows; при необходимости замените на net48.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Platforms>x64</Platforms>
+    <EnableComHosting>false</EnableComHosting>
+    <!-- Путь к каталогу Renga SDK; переопределяется из командной строки:
+         dotnet build ... -p:RengaSdkDir="C:\Program Files\Renga\SDK" -->
+    <RengaSdkDir Condition="'$(RengaSdkDir)' == ''">$(RENGA_SDK_DIR)</RengaSdkDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RengaHeat.Core\RengaHeat.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    Ссылка на Renga API. Renga поставляет управляемую обёртку COM-API.
+    Уточните точное имя файла (например, Renga.NET.dll или Renga.dll) в вашей версии SDK.
+  -->
+  <ItemGroup Condition="'$(RengaSdkDir)' != ''">
+    <Reference Include="Renga">
+      <HintPath>$(RengaSdkDir)\Renga.NET.dll</HintPath>
+      <EmbedInteropTypes>false</EmbedInteropTypes>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Если SDK не задан, проект компилирует только заглушку-предупреждение,
+       чтобы не падать в средах без Renga. -->
+  <PropertyGroup Condition="'$(RengaSdkDir)' == ''">
+    <DefineConstants>$(DefineConstants);RENGA_SDK_ABSENT</DefineConstants>
+  </PropertyGroup>
+
+</Project>
