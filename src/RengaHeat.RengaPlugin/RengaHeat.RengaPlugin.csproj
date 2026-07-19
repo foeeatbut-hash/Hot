@@ -20,18 +20,23 @@
   -->
 
   <PropertyGroup>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Platforms>x64</Platforms>
     <EnableComHosting>false</EnableComHosting>
     <!-- Путь к каталогу Renga SDK; переопределяется из командной строки:
-         dotnet build ... -p:RengaSdkDir="C:\Program Files\Renga\SDK" -->
+         dotnet build ... -p:RengaSdkDir="C:\RengaSDK" -->
     <RengaSdkDir Condition="'$(RengaSdkDir)' == ''">$(RENGA_SDK_DIR)</RengaSdkDir>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\RengaHeat.Core\RengaHeat.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Дескриптор плагина копируется в папку сборки, чтобы bin был сразу готов к деплою. -->
+  <ItemGroup>
+    <None Include="RengaHeat.rndesc" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!--
