@@ -60,14 +60,17 @@ public sealed class Plugin : Renga.IPlugin
         _application = null;
     }
 
-    /// <summary>Диагностический лог рядом с плагином: RengaHeat_init.log.</summary>
+    /// <summary>
+    /// Диагностический лог. Пишем во временную папку пользователя (%TEMP%), а не рядом с плагином:
+    /// папка плагина обычно в Program Files и недоступна Renga для записи под обычными правами.
+    /// Путь: %TEMP%\RengaHeat_init.log.
+    /// </summary>
     private void Log(string message)
     {
         try
         {
             var path = System.IO.Path.Combine(
-                string.IsNullOrEmpty(_pluginFolder) ? AppContext.BaseDirectory : _pluginFolder,
-                "RengaHeat_init.log");
+                System.IO.Path.GetTempPath(), "RengaHeat_init.log");
             System.IO.File.AppendAllText(path,
                 $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}\r\n");
         }
@@ -106,7 +109,7 @@ public sealed class Plugin : Renga.IPlugin
                 _application.UI.ShowMessageBox(Renga.MessageIcon.MessageIcon_Error, "RengaHeat",
                     "Ошибка расчёта: " + ex.Message +
                     "\r\n\r\nПодробности (стек вызовов) записаны в файл RengaHeat_init.log " +
-                    "в папке плагина.");
+                    "во временной папке (%TEMP%).");
             }
             catch { /* не даём вторичному сбою UI перекрыть исходную ошибку */ }
         }
