@@ -29,7 +29,7 @@ public sealed class MainForm : Form
 
     // Видимый штамп версии плагина. Увеличивайте при каждом изменении UI — по нему сразу
     // видно в заголовке окна, свежая DLL загружена или старая.
-    private const string Build = "сборка 6";
+    private const string Build = "сборка 7";
 
     private readonly Font _ui = new("Segoe UI", 9f);
     private readonly Font _uiBold = new("Segoe UI", 9f, FontStyle.Bold);
@@ -75,6 +75,25 @@ public sealed class MainForm : Form
         BuildLayout();
         TryLoadModel();
         _nav.SelectedIndex = 0;
+        AutoCalculate();   // сразу показываем результат — без ручных действий
+    }
+
+    /// <summary>
+    /// Авто-расчёт при открытии/обновлении: результат появляется без кликов. Для очень больших
+    /// моделей пропускаем (чтобы не подвешивать окно) — там расчёт запускается кнопкой.
+    /// </summary>
+    private void AutoCalculate()
+    {
+        if (_model is null || _model.Objects.Count is 0 or > 20000) return;
+        try
+        {
+            Cursor = Cursors.WaitCursor;
+            _outcome = BuildSession().Run(_model);
+            UpdateStatus();
+        }
+        catch { /* авто-расчёт не критичен: инженер запустит вручную кнопкой «Рассчитать» */ }
+        finally { Cursor = Cursors.Default; }
+        if (_nav.SelectedItem is string s) ShowSection(s);
     }
 
     private void BuildLayout()
@@ -177,12 +196,12 @@ public sealed class MainForm : Form
         Width = 1, Height = 20, Margin = new Padding(4, 5, 4, 5), BackColor = BorderColor,
     };
 
-    /// <summary>Перечитать модель из Renga (окно немодальное — модель могла измениться).</summary>
+    /// <summary>Перечитать модель из Renga (окно немодальное — модель могла измениться) и пересчитать.</summary>
     public void ReloadModel()
     {
         _outcome = null;
         TryLoadModel();
-        if (_nav.SelectedItem is string s) ShowSection(s);
+        AutoCalculate();
     }
 
     private void TryLoadModel()
@@ -247,9 +266,6 @@ public sealed class MainForm : Form
             return panel;
         }
 
-        panel.Controls.Add(Info("Инженерные объекты модели (трубы, фитинги, арматура, оборудование, приборы). " +
-            "Нажмите «Рассчитать» на панели сверху, когда роли назначены."));
-
         if (_model.Objects.Count == 0)
         {
             panel.Controls.Add(Card("Инженерных объектов не найдено",
@@ -270,11 +286,6 @@ public sealed class MainForm : Form
         panel.Controls.Add(Card("Модель",
             $"Всего объектов: {_model.Objects.Count}\r\nСоединений: {_model.Connections.Count}\r\n\r\n" +
             "Наиболее частые типы объектов:\r\n" + string.Join("\r\n", byType)));
-
-        panel.Controls.Add(Info(
-            "Расчёт выполняется по текущему профилю и настройкам классификатора/сопоставления.\r\n" +
-            "Если роли объектов не распознаны, сначала настройте «Классификатор» и «Сопоставление», " +
-            "иначе появится много замечаний «роль не определена»."));
 
         if (_outcome is not null)
         {
@@ -308,15 +319,14 @@ public sealed class MainForm : Form
     /// <summary>Собрать сессию из профиля и пользовательских настроек (роли по типам, свойство нагрузки).</summary>
     private CalculationSession BuildSession()
     {
+        // Авто-классификатор + правила инженера «тип Renga → роль» (приоритет 50 бьёт эвристику).
         var classifier = SessionFactory.DefaultClassifier();
         foreach (var (typeS, role) in _config.ResolvedTypeRoles())
             classifier.AddRule(new RoleRule($"Тип Renga → {RoleNames.Of(role)}",
                 new RoleCriteria { RengaTypeId = typeS }, role, 50));
 
-        var names = new List<string>();
-        if (!string.IsNullOrWhiteSpace(_config.LoadPropertyName)) names.Add(_config.LoadPropertyName!);
-        names.AddRange(DefaultLoadNames);
-        var mappings = SessionFactory.DefaultMappings(names);
+        // Сопоставление: свойство инженера по каждому полю в начало цепочки, затем стандартный резерв.
+        var mappings = SessionFactory.MappingsFor(_config.FieldProperties, DefaultLoadNames);
 
         return new CalculationSession
         {
@@ -347,7 +357,7 @@ public sealed class MainForm : Form
             $"Теплосчётчик на обратке:             {(p.HeatMeterOnReturn ? "да" : "нет")}\r\n\r\n" +
             $"Лимит скорости (квартиры/магистрали): {p.MaxVelocityApartmentMS} / {p.MaxVelocityMainMS} м/с\r\n" +
             $"Лимит удельных потерь:                {p.MaxSpecificLossPaM} Па/м"));
-        panel.Controls.Add(Info("Редактирование профиля и собственные профили — в следующей версии."));
+        panel.Controls.Add(Info("Профиль применяется как данные (лимиты, запасы, требования ЧТУ). Редактирование — в следующей версии."));
         return panel;
     }
 
@@ -379,10 +389,13 @@ public sealed class MainForm : Form
         cRole.Items.AddRange(roleDisplays);
         grid.Columns.AddRange(cType, cSample, cCount, cRole);
 
+        // Авто-подсказка роли по типам — таблица заполняется сразу, инженер лишь правит исключения.
+        var suggested = SessionFactory.DefaultClassifier().SuggestRolesByType(_model);
         foreach (var g in _model.Objects.Values.GroupBy(o => o.RengaTypeId ?? "").OrderByDescending(g => g.Count()))
         {
             var role = _config.TypeRoles.TryGetValue(g.Key, out var rn) && Enum.TryParse<ObjectRole>(rn, out var rr)
-                ? rr : ObjectRole.Unknown;
+                ? rr
+                : suggested.GetValueOrDefault(g.Key, ObjectRole.Unknown);
             grid.Rows.Add(g.Key, g.First().Name, g.Count(), DisplayOf(role));
         }
 
@@ -402,58 +415,69 @@ public sealed class MainForm : Form
 
         var caption = new Label
         {
-            Text = "Назначьте роль каждому типу объектов Renga (это убирает замечания «роль не определена»). " +
-                   "Выбор сохраняется автоматически и переносится между запусками.",
+            Text = "Роли распознаны автоматически по имени, портам и DN. Поправьте, где нужно — выбор сохраняется.",
             Dock = DockStyle.Fill, ForeColor = TextMuted, Font = _ui, TextAlign = ContentAlignment.MiddleLeft,
         };
         var apply = PrimaryButton("Применить и пересчитать");
         apply.Dock = DockStyle.Fill;
         apply.Click += (_, _) => RunCalculation();
 
-        return VStack(caption, 44, grid, apply, 48);
+        return VStack(caption, 30, grid, apply, 48);
     }
 
     private Control BuildMapping()
     {
         if (_model is null) return Info("Модель не загружена.");
 
-        var propNames = _model.Objects.Values.SelectMany(o => o.Properties.Values)
-            .Select(p => p.Name).Where(n => !string.IsNullOrWhiteSpace(n)).Distinct().OrderBy(n => n).ToList();
+        // Текущая цепочка источников по каждому полю (с учётом выбранных свойств) — для показа резерва.
+        var chains = BuildSession().Mappings.Rules
+            .GroupBy(r => r.Field.Key)
+            .ToDictionary(g => g.Key, g => string.Join(" → ", g.First().SourceChain.Select(s => s.Kind)));
 
-        const string autoItem = "(авто-поиск по стандартным именам)";
-        var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown, Width = 380, Font = _ui, Margin = new Padding(8, 4, 8, 4) };
-        combo.Items.Add(autoItem);
-        foreach (var n in propNames) combo.Items.Add(n);
-        combo.Text = string.IsNullOrWhiteSpace(_config.LoadPropertyName) ? autoItem : _config.LoadPropertyName!;
-
-        void Store()
+        var grid = new DataGridView
         {
-            var v = combo.Text?.Trim();
-            _config.LoadPropertyName = string.IsNullOrEmpty(v) || v.StartsWith("(авто") ? null : v;
-            _config.Save();
+            Dock = DockStyle.Fill, AllowUserToAddRows = false, RowHeadersVisible = false,
+            SelectionMode = DataGridViewSelectionMode.CellSelect,
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, EditMode = DataGridViewEditMode.EditOnEnter,
+        };
+        StyleGrid(grid);
+        var cField = new DataGridViewTextBoxColumn { HeaderText = "Расчётное поле", ReadOnly = true, FillWeight = 32 };
+        var cProp = new DataGridViewTextBoxColumn { HeaderText = "Свойство-источник", FillWeight = 24 };
+        var cChain = new DataGridViewTextBoxColumn { HeaderText = "Цепочка резерва", ReadOnly = true, FillWeight = 34 };
+        var cUnit = new DataGridViewTextBoxColumn { HeaderText = "Ед.", ReadOnly = true, FillWeight = 10 };
+        grid.Columns.AddRange(cField, cProp, cChain, cUnit);
+
+        foreach (var f in StandardFields.All)
+        {
+            var prop = _config.FieldProperties.GetValueOrDefault(f.Key, "");
+            var row = grid.Rows[grid.Rows.Add(f.DisplayName, prop, chains.GetValueOrDefault(f.Key, "—"), f.BaseUnitSymbol)];
+            row.Tag = f.Key;   // устойчивый ключ поля
         }
-        var applyBtn = PrimaryButton("Применить и пересчитать");
-        applyBtn.Width = 220; applyBtn.Margin = new Padding(8, 0, 0, 0);
-        applyBtn.Click += (_, _) => { Store(); RunCalculation(); };
 
-        var controls = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = false, FlowDirection = FlowDirection.LeftToRight };
-        controls.Controls.Add(new Label { Text = "Свойство тепловой нагрузки прибора:", AutoSize = true, Font = _ui, ForeColor = TextDark, Margin = new Padding(0, 8, 0, 0) });
-        controls.Controls.Add(combo);
-        controls.Controls.Add(applyBtn);
+        grid.CurrentCellDirtyStateChanged += (_, _) =>
+        {
+            if (grid.IsCurrentCellDirty) grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
+        };
+        grid.CellValueChanged += (_, e) =>
+        {
+            if (e.RowIndex < 0 || grid.Columns[e.ColumnIndex] != cProp) return;
+            var key = grid.Rows[e.RowIndex].Tag as string ?? "";
+            var v = grid.Rows[e.RowIndex].Cells[cProp.Index].Value?.ToString()?.Trim() ?? "";
+            if (string.IsNullOrEmpty(v)) _config.FieldProperties.Remove(key);
+            else _config.FieldProperties[key] = v;
+            _config.Save();
+        };
 
-        // Справочно: текущие цепочки источников по полям.
-        var table = new DataTable();
-        table.Columns.Add("Расчётное поле");
-        table.Columns.Add("Роли");
-        table.Columns.Add("Цепочка источников");
-        table.Columns.Add("Единица");
-        foreach (var r in BuildSession().Mappings.Rules)
-            table.Rows.Add(r.Field.DisplayName,
-                r.AppliesToRoles.Count == 0 ? "все" : string.Join(", ", r.AppliesToRoles.Select(RoleNames.Of)),
-                string.Join(" → ", r.SourceChain.Select(s => s.Kind)),
-                r.SourceUnitSymbol ?? r.Field.BaseUnitSymbol);
+        var caption = new Label
+        {
+            Text = "Свойство-источник по каждому полю (пусто — авто-поиск). Оно ставится первым в цепочке резерва.",
+            Dock = DockStyle.Fill, ForeColor = TextMuted, Font = _ui, TextAlign = ContentAlignment.MiddleLeft,
+        };
+        var apply = PrimaryButton("Применить и пересчитать");
+        apply.Dock = DockStyle.Fill;
+        apply.Click += (_, _) => RunCalculation();
 
-        return VStack(controls, 48, MakeGrid(table, null), null, 0);
+        return VStack(caption, 30, grid, apply, 48);
     }
 
     /// <summary>Вертикальная раскладка: верх (фикс. высота) / центр (тянется) / низ (фикс., может быть null).</summary>
@@ -495,8 +519,8 @@ public sealed class MainForm : Form
     {
         if (_outcome is null) return Info("Результаты появляются после расчёта. Нажмите «Рассчитать» в разделе «Обзор».");
         if (_outcome.Results.Count == 0)
-            return Info("Расчёт не дал результатов: не найден источник (ИТП) или во фрагменте нет приборов. " +
-                        "Проверьте роли в «Классификаторе» и замечания в «Проверке модели».");
+            return Info("Нет результатов: не найден источник (ИТП) или приборы. " +
+                        "Проверьте роли в «Классификаторе» и «Проверку модели».");
 
         var tabs = new TabControl { Dock = DockStyle.Fill };
         foreach (var r in _outcome.Results)
@@ -558,8 +582,8 @@ public sealed class MainForm : Form
         if (_outcome is null) return Info("Изменения формируются после расчёта.");
         var changes = _outcome.PreviewChanges.Changes;
         if (changes.Count == 0)
-            return Info("Нет предлагаемых изменений. Они появляются, когда включена запись результатов и настроены " +
-                        "свойства-приёмники (по умолчанию плагин работает в режиме только анализа — модель не меняется).");
+            return Info("Изменений нет — включён режим только анализа (модель не меняется). " +
+                        "Запись включается настройкой свойств-приёмников.");
 
         var grid = new DataGridView
         {
@@ -593,11 +617,10 @@ public sealed class MainForm : Form
 
         var caption = new Label
         {
-            Text = "Отметьте изменения и нажмите «Применить». Ничего не применяется без подтверждения; " +
-                   "изменения выполняются одной операцией с поддержкой отмены (Undo).",
+            Text = "Отметьте изменения и нажмите «Применить» — одной операцией, с поддержкой отмены (Undo).",
             Dock = DockStyle.Fill, ForeColor = TextMuted, Font = _ui, TextAlign = ContentAlignment.MiddleLeft,
         };
-        return VStack(caption, 44, grid, apply, 48);
+        return VStack(caption, 30, grid, apply, 48);
     }
 
     private Control BuildReports()
@@ -618,8 +641,8 @@ public sealed class MainForm : Form
             panel.Controls.Add(SaveButton("Ведомость участков первого контура (.csv)", "RengaHeat_участки.csv",
                 "CSV (*.csv)|*.csv", () => Reports.SegmentsCsv(_outcome!.Results[0])));
         }
-        panel.Controls.Add(Info("\r\nВНИМАНИЕ: расчёт RengaHeat не заменяет обязательный расчёт в Sankom/DCad " +
-                                "и согласование производителя арматуры по ЧТУ. Пакет сверки — для проверки методик."));
+        panel.Controls.Add(Info("\r\nВНИМАНИЕ: RengaHeat не заменяет обязательный расчёт в Sankom/DCad и согласование " +
+                                "арматуры по ЧТУ. Пакет сверки — для проверки методик."));
         return panel;
     }
 

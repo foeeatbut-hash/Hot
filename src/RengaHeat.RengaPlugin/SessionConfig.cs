@@ -17,6 +17,13 @@ public sealed class SessionConfig
     /// <summary>Имя свойства, из которого берётся тепловая нагрузка прибора (пусто — авто-поиск).</summary>
     public string? LoadPropertyName { get; set; }
 
+    /// <summary>
+    /// Ключ расчётного поля (FieldDefinition.Key) → имя свойства-источника, выбранное инженером.
+    /// Ставится в начало цепочки сопоставления поля. Параметризует каждый вход расчёта
+    /// (длина, диаметр, шероховатость, Kv, ζ, …), а не только нагрузку.
+    /// </summary>
+    public Dictionary<string, string> FieldProperties { get; set; } = new();
+
     public static string DefaultPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RengaHeat", "config.json");
 
@@ -25,7 +32,14 @@ public sealed class SessionConfig
         try
         {
             if (File.Exists(DefaultPath))
-                return JsonSerializer.Deserialize<SessionConfig>(File.ReadAllText(DefaultPath)) ?? new SessionConfig();
+            {
+                var cfg = JsonSerializer.Deserialize<SessionConfig>(File.ReadAllText(DefaultPath)) ?? new SessionConfig();
+                // Миграция: прежнее одиночное свойство нагрузки → общая таблица полей.
+                if (!string.IsNullOrWhiteSpace(cfg.LoadPropertyName) &&
+                    !cfg.FieldProperties.ContainsKey("device.load"))
+                    cfg.FieldProperties["device.load"] = cfg.LoadPropertyName!;
+                return cfg;
+            }
         }
         catch { /* повреждённый конфиг не должен ронять плагин */ }
         return new SessionConfig();

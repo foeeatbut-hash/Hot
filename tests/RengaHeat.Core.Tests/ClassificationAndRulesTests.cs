@@ -1,4 +1,6 @@
+using RengaHeat.Core.Calculation;
 using RengaHeat.Core.Classification;
+using RengaHeat.Core.Mapping;
 using RengaHeat.Core.Model;
 using RengaHeat.Core.Rules;
 using Xunit;
@@ -7,6 +9,54 @@ namespace RengaHeat.Core.Tests;
 
 public class ClassificationAndRulesTests
 {
+    [Theory]
+    [InlineData("Радиатор стальной 500", ObjectRole.Radiator)]
+    [InlineData("Конвектор напольный", ObjectRole.Convector)]
+    [InlineData("Насос циркуляционный", ObjectRole.Pump)]
+    [InlineData("Балансировочный клапан ASV", ObjectRole.BalancingValve)]
+    [InlineData("Фильтр сетчатый", ObjectRole.Strainer)]
+    [InlineData("Стояк Т1", ObjectRole.Riser)]
+    [InlineData("Труба ВГП", ObjectRole.Pipe)]
+    public void DefaultClassifier_RecognisesByName(string name, ObjectRole expected)
+    {
+        var obj = new NetworkObject { Id = "x", Name = name };
+        Assert.Equal(expected, SessionFactory.DefaultClassifier().Classify(obj).Assigned.Role);
+    }
+
+    [Fact]
+    public void DefaultClassifier_TeeByPortCount_WhenNameSilent()
+    {
+        var obj = new NetworkObject { Id = "x", Name = "фитинг узла" };
+        obj.Ports.Add(new Port("a", Dn: 25));
+        obj.Ports.Add(new Port("b", Dn: 25));
+        obj.Ports.Add(new Port("c", Dn: 20));
+        Assert.Equal(ObjectRole.Tee, SessionFactory.DefaultClassifier().Classify(obj).Assigned.Role);
+    }
+
+    [Fact]
+    public void SuggestRolesByType_TakesMajorityPerType()
+    {
+        var model = new HeatingModel { Name = "m" };
+        model.Add(new NetworkObject { Id = "1", Name = "Радиатор A", RengaTypeId = "TYPE-RAD" });
+        model.Add(new NetworkObject { Id = "2", Name = "Радиатор B", RengaTypeId = "TYPE-RAD" });
+        model.Add(new NetworkObject { Id = "3", Name = "нечто", RengaTypeId = "TYPE-RAD" });
+        var suggestions = SessionFactory.DefaultClassifier().SuggestRolesByType(model);
+        Assert.Equal(ObjectRole.Radiator, suggestions["TYPE-RAD"]);
+    }
+
+    [Fact]
+    public void MappingsFor_PrependsUserPropertyPerField()
+    {
+        var overrides = new Dictionary<string, string>
+        {
+            [StandardFields.PipeLength.Key] = "МояДлина",
+        };
+        var mappings = SessionFactory.MappingsFor(overrides);
+        var lengthRule = mappings.Rules.First(r => r.Field.Key == StandardFields.PipeLength.Key);
+        Assert.Equal("Свойство экземпляра", lengthRule.SourceChain[0].Kind);
+        Assert.Contains("МояДлина", ((InstancePropertySource)lengthRule.SourceChain[0]).PropertyName);
+    }
+
     [Fact]
     public void ManualRole_WinsOverRules()
     {

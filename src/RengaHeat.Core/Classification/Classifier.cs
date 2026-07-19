@@ -109,6 +109,32 @@ public sealed class Classifier
     public IReadOnlyList<ClassificationOutcome> ClassifyAll(HeatingModel model) =>
         model.Objects.Values.Select(Classify).ToList();
 
+    /// <summary>
+    /// Подсказка роли для каждого типа Renga (ObjectTypeS): по каждому типу берётся наиболее частая
+    /// роль, выведенная правилами. Используется UI для авто-заполнения таблицы «тип → роль», чтобы
+    /// инженер лишь правил исключения, а не размечал всё вручную. Модель не мутируется.
+    /// </summary>
+    public IReadOnlyDictionary<string, ObjectRole> SuggestRolesByType(HeatingModel model)
+    {
+        var result = new Dictionary<string, ObjectRole>();
+        foreach (var byType in model.Objects.Values.GroupBy(o => o.RengaTypeId ?? ""))
+        {
+            var votes = new Dictionary<ObjectRole, int>();
+            foreach (var obj in byType)
+            {
+                var matched = _rules.Where(r => r.Criteria.Matches(obj)).ToList();
+                if (matched.Count == 0) continue;
+                var maxP = matched.Max(x => x.Priority);
+                var top = matched.Where(r => r.Priority == maxP).Select(r => r.Role).Distinct().ToList();
+                if (top.Count != 1) continue;          // конфликт — не голосуем
+                votes[top[0]] = votes.GetValueOrDefault(top[0]) + 1;
+            }
+            if (votes.Count > 0)
+                result[byType.Key] = votes.OrderByDescending(kv => kv.Value).First().Key;
+        }
+        return result;
+    }
+
     private static readonly Dictionary<string, ObjectRole> RoleAliases = new(StringComparer.OrdinalIgnoreCase)
     {
         ["Источник тепла"] = ObjectRole.HeatSource, ["ИТП"] = ObjectRole.HeatSource,
