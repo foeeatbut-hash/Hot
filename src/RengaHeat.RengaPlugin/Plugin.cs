@@ -16,32 +16,62 @@ public sealed class Plugin : Renga.IPlugin
 {
     private Renga.IApplication? _application;
     private Renga.IUIPanelExtension? _panel;
+    private readonly List<Renga.ActionEventSource> _eventSources = new();
+    private string _pluginFolder = "";
 
     public bool Initialize(string pluginFolder)
     {
-        _application = new Renga.Application();
+        _pluginFolder = pluginFolder;
+        // Любой сбой на этом этапе Renga показывает как «не удаётся инициализировать модуль».
+        // Записываем точную причину (тип, сообщение, стек) в файл рядом с плагином —
+        // это избавляет от поиска системного лога Renga при диагностике.
+        try
+        {
+            _application = new Renga.Application();
 
-        // Регистрируем действие «Гидравлический расчёт отопления».
-        var ui = _application.UI;
-        var action = ui.CreateAction();
-        action.DisplayName = "Гидравлический расчёт отопления";
-        action.ToolTip = "RengaHeat: анализ сети, расчёт, подбор и предпросмотр изменений";
+            var ui = _application.UI;
+            var action = ui.CreateAction();
+            action.DisplayName = "Гидравлический расчёт отопления";
+            action.ToolTip = "RengaHeat: анализ сети, расчёт, подбор и предпросмотр изменений";
 
-        var events = new Renga.ActionEventSource(action);
-        events.Triggered += (_, _) => RunCalculation();
+            var events = new Renga.ActionEventSource(action);
+            events.Triggered += (_, _) => RunCalculation();
+            _eventSources.Add(events);
 
-        // Размещаем действие на вкладке/панели инструментов (уточните API вашей версии Renga).
-        _panel = ui.CreateUIPanelExtension();
-        _panel.AddToolButton(action);
-        ui.AddExtensionToPrimaryPanel(_panel);
+            _panel = ui.CreateUIPanelExtension();
+            _panel.AddToolButton(action);
+            ui.AddExtensionToPrimaryPanel(_panel);
 
-        return true;
+            Log("Плагин RengaHeat инициализирован успешно.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log("ОШИБКА инициализации RengaHeat:\r\n" + ex);
+            return false; // честно сообщаем Renga о сбое, но причина уже записана в лог
+        }
     }
 
     public void Stop()
     {
+        foreach (var source in _eventSources) source.Dispose();
+        _eventSources.Clear();
         _panel = null;
         _application = null;
+    }
+
+    /// <summary>Диагностический лог рядом с плагином: RengaHeat_init.log.</summary>
+    private void Log(string message)
+    {
+        try
+        {
+            var path = System.IO.Path.Combine(
+                string.IsNullOrEmpty(_pluginFolder) ? AppContext.BaseDirectory : _pluginFolder,
+                "RengaHeat_init.log");
+            System.IO.File.AppendAllText(path,
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}\r\n");
+        }
+        catch { /* лог не должен ломать инициализацию */ }
     }
 
     private void RunCalculation()
@@ -49,6 +79,12 @@ public sealed class Plugin : Renga.IPlugin
         if (_application is null) return;
         try
         {
+            if (!_application.HasProject())
+            {
+                _application.UI.ShowMessageBox(Renga.MessageIcon.MessageIcon_Warning, "RengaHeat",
+                    "Откройте проект Renga с системой отопления перед запуском расчёта.");
+                return;
+            }
             var gateway = new RengaModelGateway(_application);
             var model = gateway.ReadModel();
 

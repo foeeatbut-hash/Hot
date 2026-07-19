@@ -1,25 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Дескриптор плагина Renga (.rndesc).
-  Имя сборки и полное имя типа точки входа должны совпадать с собранной DLL.
-  Значения uid/версии/совместимости уточните по документации вашей версии Renga SDK.
+  Дескриптор плагина Renga (.rndesc), схема для плагинов .NET 8.
+  RequiredAPIVersion должен соответствовать версии установленного Renga SDK
+  (здесь 2.48 — под Renga.NET8.PluginUtility 2.48.x). PluginFilename и тип точки входа
+  должны совпадать с собранной DLL.
 -->
-<Plugin xmlns="http://www.renga.ru/plugin/1.0">
-  <Uid>rengaheat-hydraulic-heating</Uid>
+<RengaPlugin>
   <Name>RengaHeat — гидравлический расчёт отопления</Name>
-  <Vendor>RengaHeat</Vendor>
   <Version>0.1.0</Version>
-  <Description>
-    Инженерный модуль полного цикла для проектирования отопления: чтение модели,
-    диагностика топологии и направлений, гидравлический расчёт, подбор диаметров и
-    арматуры, балансировка, безопасный предпросмотр изменений, отчёты и экспорт.
-    Работает по параметрическому профилю требований (по умолчанию — ЧТУ Новосаратовки).
-  </Description>
-
-  <!-- Точка входа: сборка и класс, реализующий Renga.IPlugin -->
-  <Assembly>RengaHeat.RengaPlugin.dll</Assembly>
-  <Type>RengaHeat.RengaPlugin.Plugin</Type>
-
-  <!-- Совместимость по версии приложения; замените на поддерживаемый вашей версией диапазон -->
-  <ApiVersion>4.0</ApiVersion>
-</Plugin>
+  <RequiredAPIVersion>2.48</RequiredAPIVersion>
+  <Vendor>RengaHeat</Vendor>
+  <Copyright>RengaHeat</Copyright>
+  <PluginFilename>RengaHeat.RengaPlugin.dll</PluginFilename>
+  <PluginType>Net8</PluginType>
+</RengaPlugin>

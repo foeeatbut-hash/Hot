@@ -35,14 +35,23 @@
   </ItemGroup>
 
   <!--
-    Ссылка на Renga API. Renga поставляет управляемую обёртку COM-API.
-    Уточните точное имя файла (например, Renga.NET.dll или Renga.dll) в вашей версии SDK.
+    Ссылки на Renga API для плагина .NET 8:
+      Interop.Renga.dll            — COM-интероп Renga (интерфейсы IApplication, IModel, ...);
+      Renga.NET8.PluginUtility.dll — помощники (ActionEventSource, ApplicationEventSource, ...).
+    Обе берутся ИЗ УСТАНОВЛЕННОГО Renga SDK (не генерируйте свой Interop через tlbimp —
+    он должен совпадать с тем, под который собран PluginUtility, иначе плагин не загрузится).
+    Private=false: файлы уже присутствуют рядом с Renga; при деплое кладите те же копии из SDK.
   -->
   <ItemGroup Condition="'$(RengaSdkDir)' != ''">
-    <Reference Include="Renga">
-      <HintPath>$(RengaSdkDir)\Renga.NET.dll</HintPath>
+    <Reference Include="Interop.Renga">
+      <HintPath>$(RengaSdkDir)\Interop.Renga.dll</HintPath>
       <EmbedInteropTypes>false</EmbedInteropTypes>
-      <Private>false</Private>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Renga.NET8.PluginUtility">
+      <HintPath>$(RengaSdkDir)\Renga.NET8.PluginUtility.dll</HintPath>
+      <EmbedInteropTypes>false</EmbedInteropTypes>
+      <Private>true</Private>
     </Reference>
   </ItemGroup>
 

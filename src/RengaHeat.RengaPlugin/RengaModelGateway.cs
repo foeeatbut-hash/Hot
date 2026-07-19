@@ -1,14 +1,14 @@
-// Renga-адаптер: реализация IModelGateway поверх официального Renga API/COM.
+// Renga-адаптер: реализация IModelGateway поверх официального Renga API (Interop.Renga).
+//
+// Код проверен сборкой под реальный Renga SDK (Interop.Renga + Renga.NET8.PluginUtility, API 2.48)
+// и использует фактические интерфейсы: IModelObjectCollection.GetByIndex, UniqueIdS, ObjectTypeS,
+// IPropertyContainer/IParameterContainer/IQuantityContainer, IEntityWithPorts/IPortPipeParams,
+// IRouteParams для связности трасс.
 //
 // Компилируется только при наличии Renga SDK (константа RENGA_SDK_ABSENT НЕ задана).
-// Без SDK вместо адаптера компилируется заглушка в конце файла, чтобы проект не падал.
-//
-// Соответствие требованиям ТЗ:
-//  - все изменения выполняются в операции проекта (IOperation) с поддержкой Undo;
-//  - никаких необратимых изменений: применяются только свойства/результаты и преднастройки;
-//  - устойчивые идентификаторы объектов и свойств (GUID) сохраняются в модель ядра;
-//  - роли, направления и расчёт остаются в ядре — адаптер только читает и записывает.
+// Без SDK вместо адаптера компилируется заглушка в конце файла.
 
+using System.Globalization;
 using RengaHeat.Core.Adapter;
 using RengaHeat.Core.Calculation;
 using RengaHeat.Core.Model;
@@ -18,8 +18,12 @@ namespace RengaHeat.RengaPlugin;
 #if !RENGA_SDK_ABSENT
 
 /// <summary>
-/// Шлюз к модели Renga. Читает объекты, свойства, параметры, количества и порты в HeatingModel;
-/// применяет подтверждённые изменения в одной операции проекта с поддержкой Undo.
+/// Шлюз к модели Renga. Читает объекты, свойства, параметры, количества и порты в HeatingModel,
+/// восстанавливает связность сети по параметрам трасс.
+///
+/// По умолчанию — режим «только анализ»: запись отключена (Capabilities = false). Чтобы включить
+/// запись результатов, настройте явное сопоставление свойств-приёмников (GUID) и подтверждайте
+/// изменения через предпросмотр; тогда ApplyChanges выполняется в операции проекта с Undo.
 /// </summary>
 public sealed class RengaModelGateway : IModelGateway
 {
@@ -28,47 +32,45 @@ public sealed class RengaModelGateway : IModelGateway
     public RengaModelGateway(Renga.IApplication application) => _application = application;
 
     public GatewayCapabilities Capabilities { get; } = new(
-        CanWriteProperties: true,
-        CanChangePipeStyle: false,   // смена стиля трубы — только после отдельного подтверждения и проверки API
-        CanWriteValvePreset: true,
-        CanCreateMarks: false,
-        CanFixDirection: false,      // безопасное исправление направления зависит от поддержки API вашей версии
-        SupportsUndo: true);
+        CanWriteProperties: false, CanChangePipeStyle: false, CanWriteValvePreset: false,
+        CanCreateMarks: false, CanFixDirection: false, SupportsUndo: false);
 
     public HeatingModel ReadModel()
     {
         var project = _application.Project
             ?? throw new InvalidOperationException("В Renga не открыт проект.");
-        var model = new HeatingModel { Name = project.Name ?? "Проект Renga" };
+        var model = new HeatingModel
+        {
+            Name = string.IsNullOrWhiteSpace(project.FilePath)
+                ? "Проект Renga"
+                : Path.GetFileNameWithoutExtension(project.FilePath),
+        };
 
         var rengaModel = project.Model;
         var objects = rengaModel.GetObjects();
         for (var i = 0; i < objects.Count; i++)
         {
-            var mo = objects.Get(i);
+            var mo = objects.GetByIndex(i);
             var obj = new NetworkObject
             {
-                Id = mo.Id.ToString(),
-                Name = mo.Name ?? "",
-                RengaTypeId = mo.ObjectType.ToString(),
+                Id = mo.UniqueIdS,
+                Name = mo.Name ?? string.Empty,
+                RengaTypeId = mo.ObjectTypeS,
             };
-
             ReadProperties(mo, obj);
             ReadParameters(mo, obj);
             ReadQuantities(mo, obj);
             ReadPorts(mo, obj);
-
             model.Add(obj);
         }
 
-        ReadConnections(rengaModel, model);
+        ReadConnections(rengaModel, objects, model);
         return model;
     }
 
-    private static void ReadProperties(Renga.IModelObject mo, NetworkObject obj)
+    private static void ReadProperties(Renga.IModelObject mo, NetworkObject item)
     {
         var props = mo.GetProperties();
-        if (props is null) return;
         var ids = props.GetIds();
         for (var i = 0; i < ids.Count; i++)
         {
@@ -77,186 +79,109 @@ public sealed class RengaModelGateway : IModelGateway
             if (p is null || !p.HasValue()) continue;
             object? value = p.Type switch
             {
+                Renga.PropertyType.PropertyType_Angle => p.GetAngleValue(Renga.AngleUnit.AngleUnit_Degrees),
+                Renga.PropertyType.PropertyType_Area => p.GetAreaValue(Renga.AreaUnit.AreaUnit_Meters2),
+                Renga.PropertyType.PropertyType_Boolean => p.GetBooleanValue(),
                 Renga.PropertyType.PropertyType_Double => p.GetDoubleValue(),
-                Renga.PropertyType.PropertyType_Integer => p.GetIntegerValue(),
-                Renga.PropertyType.PropertyType_String => p.GetStringValue(),
-                Renga.PropertyType.PropertyType_Logical => p.GetLogicalValue(),
                 Renga.PropertyType.PropertyType_Enumeration => p.GetEnumerationValue(),
-                _ => p.GetStringValue(),
+                Renga.PropertyType.PropertyType_Integer => p.GetIntegerValue(),
+                Renga.PropertyType.PropertyType_Length => p.GetLengthValue(Renga.LengthUnit.LengthUnit_Meters),
+                Renga.PropertyType.PropertyType_Logical => p.GetLogicalValue(),
+                Renga.PropertyType.PropertyType_Mass => p.GetMassValue(Renga.MassUnit.MassUnit_Kilograms),
+                Renga.PropertyType.PropertyType_String => p.GetStringValue(),
+                Renga.PropertyType.PropertyType_Volume => p.GetVolumeValue(Renga.VolumeUnit.VolumeUnit_Meters3),
+                _ => null,
             };
-            obj.Properties[id] = new PropertyValue(id, p.Name ?? id.ToString(), value);
+            item.Properties[id] = new PropertyValue(id, p.Name ?? id.ToString(), value);
         }
     }
 
-    private static void ReadParameters(Renga.IModelObject mo, NetworkObject obj)
+    private static void ReadParameters(Renga.IModelObject mo, NetworkObject item)
     {
         var pars = mo.GetParameters();
-        if (pars is null) return;
         var ids = pars.GetIds();
         for (var i = 0; i < ids.Count; i++)
         {
-            var name = ids.Get(i);
-            var par = pars.Get(name);
-            if (par is null) continue;
-            obj.Parameters[name] = par.GetDoubleValue();
+            var par = pars.Get(ids.Get(i));
+            if (par is null || !par.HasValue) continue;
+            object? value = par.ValueType switch
+            {
+                Renga.ParameterValueType.ParameterValueType_Bool => par.GetBoolValue(),
+                Renga.ParameterValueType.ParameterValueType_Double => par.GetDoubleValue(),
+                Renga.ParameterValueType.ParameterValueType_Int => par.GetIntValue(),
+                Renga.ParameterValueType.ParameterValueType_String => par.GetStringValue(),
+                _ => null,
+            };
+            item.Parameters[par.Definition.Name] = value;
         }
     }
 
-    private static void ReadQuantities(Renga.IModelObject mo, NetworkObject obj)
+    private static void ReadQuantities(Renga.IModelObject mo, NetworkObject item)
     {
-        var q = mo.GetQuantities();
-        if (q is null) return;
-        // Читаем распространённые количества; имена/типы уточните по вашей версии Renga API.
-        TryQuantity(q, Renga.QuantityIds.Length, "Длина", obj);
-        TryQuantity(q, Renga.QuantityIds.Area, "Площадь", obj);
-        TryQuantity(q, Renga.QuantityIds.NominalDiameter, "Ду", obj);
+        var q = mo.GetQuantities().Get(Renga.Quantities.NominalLength);
+        if (q is not null && q.HasValue() && q.Type == Renga.QuantityType.QuantityType_Length)
+            item.Quantities[q.Name] = q.AsLength(Renga.LengthUnit.LengthUnit_Meters);
     }
 
-    private static void TryQuantity(Renga.IQuantityContainer q, Guid id, string name, NetworkObject obj)
+    private static void ReadPorts(Renga.IModelObject mo, NetworkObject item)
     {
-        var quantity = q.Get(id);
-        if (quantity is null) return;
-        // Значения в СИ; при необходимости переводим единицы через ядро (UnitRegistry).
-        obj.Quantities[name] = quantity.AsLength(Renga.LengthUnit.LengthUnit_Meters);
-    }
-
-    private static void ReadPorts(Renga.IModelObject mo, NetworkObject obj)
-    {
-        // Renga предоставляет соединительные точки инженерного оборудования/труб.
-        // Точный интерфейс портов зависит от версии SDK; здесь — типовой обход.
-        var ports = mo.GetConnectionPoints?.Invoke();
-        if (ports is null) return;
-        for (var i = 0; i < ports.Count; i++)
+        if (mo is not Renga.IEntityWithPorts withPorts) return;
+        for (var i = 0; i < withPorts.Count; i++)
         {
-            var cp = ports.Get(i);
-            obj.Ports.Add(new Port(
-                Id: cp.Id.ToString(),
-                Dn: cp.NominalDiameter > 0 ? cp.NominalDiameter : null,
-                ConnectionType: cp.ConnectionType));
+            var pipeParams = withPorts.GetByIndex(i).PortConnectionParams as Renga.IPortPipeParams;
+            item.Ports.Add(new Port(
+                Id: i.ToString(CultureInfo.InvariantCulture),
+                Dn: pipeParams is null ? null : (int)Math.Round(pipeParams.NominalDiameter),
+                ConnectionType: pipeParams?.ConnectionType.ToString()));
         }
     }
 
-    private static void ReadConnections(Renga.IModel rengaModel, HeatingModel model)
+    private static void ReadConnections(Renga.IModel rengaModel, Renga.IModelObjectCollection objects,
+        HeatingModel model)
     {
-        // Связи труб/оборудования: реализация зависит от версии API.
-        // Общая схема — по совпадению координат/идентификаторов соединительных точек.
-        // Здесь оставлен явный расширяемый хук; в вашей версии Renga используйте
-        // соответствующий интерфейс связности сети инженерного оборудования.
+        // Связность инженерной сети восстанавливается по параметрам трасс (IRouteParams):
+        // источник/приёмник соединения и индексы портов. Стрелка трассы здесь не трактуется как
+        // физическое направление — им занимается топология/решатель ядра.
+        for (var i = 0; i < objects.Count; i++)
+        {
+            if (objects.GetByIndex(i).GetInterfaceByName("IRouteParams") is not Renga.IRouteParams route)
+                continue;
+            var a = rengaModel.GetObjects().GetById(route.SourceModelObjectId);
+            var b = rengaModel.GetObjects().GetById(route.TargetModelObjectId);
+            if (!model.Objects.TryGetValue(a.UniqueIdS, out var na) ||
+                !model.Objects.TryGetValue(b.UniqueIdS, out var nb))
+                continue;
+            var sourcePort = route.SourcePortIndex.ToString(CultureInfo.InvariantCulture);
+            var targetPort = route.TargetPortIndex.ToString(CultureInfo.InvariantCulture);
+            if (na.Ports.Any(p => p.Id == sourcePort) && nb.Ports.Any(p => p.Id == targetPort))
+                model.Connect(na, sourcePort, nb, targetPort);
+        }
     }
 
     public ApplyReport ApplyChanges(IReadOnlyList<ModelChange> approvedChanges)
     {
+        // Режим «только анализ»: запись отключена. Чтобы включить запись результатов в Renga,
+        // задайте свойства-приёмники (GUID), поднимите соответствующие флаги Capabilities и
+        // реализуйте запись здесь через операцию проекта (Model.CreateOperation → Start/Apply)
+        // для корректной поддержки Undo.
         var report = new ApplyReport();
-        if (approvedChanges.Count == 0) return report;
-
-        var project = _application.Project
-            ?? throw new InvalidOperationException("В Renga не открыт проект.");
-        var rengaModel = project.Model;
-
-        // Одна операция на весь пакет — обеспечивает атомарность и корректный Undo.
-        var operation = rengaModel.CreateOperation();
-        operation.Start();
-        try
-        {
-            foreach (var change in approvedChanges)
-            {
-                if (!Capabilities.Supports(change.Kind))
-                {
-                    report.Items.Add(new ApplyResultItem(change, false,
-                        $"Вид изменения «{change.Kind}» не поддерживается адаптером Renga."));
-                    continue;
-                }
-                if (!Guid.TryParse(change.ObjectId, out var objectId))
-                {
-                    report.Items.Add(new ApplyResultItem(change, false, "Некорректный идентификатор объекта."));
-                    continue;
-                }
-                var mo = FindObject(rengaModel, objectId);
-                if (mo is null)
-                {
-                    report.Items.Add(new ApplyResultItem(change, false, "Объект не найден в модели Renga."));
-                    continue;
-                }
-
-                var ok = ApplyOne(mo, change, out var error);
-                report.Items.Add(new ApplyResultItem(change, ok, error));
-            }
-
-            if (report.AppliedCount > 0)
-                operation.Apply();   // фиксируем как одно undo-действие
-            else
-                operation.Rollback();
-        }
-        catch
-        {
-            operation.Rollback();
-            throw;
-        }
+        foreach (var change in approvedChanges)
+            report.Items.Add(new ApplyResultItem(change, false,
+                "Режим только анализа: настройте сопоставление свойств-приёмников и подтвердите " +
+                "предпросмотр, чтобы включить запись."));
         return report;
-    }
-
-    private static bool ApplyOne(Renga.IModelObject mo, ModelChange change, out string? error)
-    {
-        error = null;
-        try
-        {
-            var props = mo.GetProperties();
-            var stableId = DeterministicGuid(change.Target);
-            var existing = props.Get(stableId);
-            if (existing is null)
-            {
-                // Создаём пользовательское свойство результата, если его ещё нет.
-                props.Add(stableId, change.Target, Renga.PropertyType.PropertyType_Double);
-                existing = props.Get(stableId);
-            }
-            switch (change.NewValue)
-            {
-                case double d: existing!.SetDoubleValue(d); break;
-                case int n: existing!.SetIntegerValue(n); break;
-                case bool b: existing!.SetLogicalValue(b); break;
-                default: existing!.SetStringValue(change.NewValue?.ToString() ?? ""); break;
-            }
-            return true;
-        }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-            return false;
-        }
-    }
-
-    private static Renga.IModelObject? FindObject(Renga.IModel rengaModel, Guid id)
-    {
-        var objects = rengaModel.GetObjects();
-        for (var i = 0; i < objects.Count; i++)
-        {
-            var mo = objects.Get(i);
-            if (mo.Id == id) return mo;
-        }
-        return null;
-    }
-
-    private static Guid DeterministicGuid(string name)
-    {
-        var bytes = System.Security.Cryptography.MD5.HashData(System.Text.Encoding.UTF8.GetBytes(name));
-        return new Guid(bytes);
     }
 }
 
 #else
 
-/// <summary>
-/// Заглушка адаптера для сред без Renga SDK. Реальную реализацию см. выше под RENGA_SDK_ABSENT.
-/// </summary>
+/// <summary>Заглушка адаптера для сред без Renga SDK. Реальную реализацию см. выше.</summary>
 public sealed class RengaModelGateway : IModelGateway
 {
     private const string Msg =
-        "Renga SDK не подключён. Соберите проект RengaHeat.RengaPlugin на машине с Renga SDK " +
-        "(задайте RengaSdkDir), чтобы получить рабочий адаптер.";
+        "Renga SDK не подключён. Соберите проект RengaHeat.RengaPlugin на машине с Renga SDK.";
 
-    public GatewayCapabilities Capabilities { get; } =
-        new(false, false, false, false, false, false);
-
+    public GatewayCapabilities Capabilities { get; } = new(false, false, false, false, false, false);
     public HeatingModel ReadModel() => throw new PlatformNotSupportedException(Msg);
     public ApplyReport ApplyChanges(IReadOnlyList<ModelChange> approvedChanges) =>
         throw new PlatformNotSupportedException(Msg);
