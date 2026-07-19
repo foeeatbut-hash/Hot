@@ -99,8 +99,16 @@ public sealed class Plugin : Renga.IPlugin
         }
         catch (Exception ex)
         {
-            _application.UI.ShowMessageBox(
-                Renga.MessageIcon.MessageIcon_Error, "RengaHeat", ex.Message);
+            // Пишем ПОЛНЫЙ стек в лог, чтобы видеть точное место сбоя, а не только текст.
+            Log("ОШИБКА расчёта RengaHeat:\r\n" + ex);
+            try
+            {
+                _application.UI.ShowMessageBox(Renga.MessageIcon.MessageIcon_Error, "RengaHeat",
+                    "Ошибка расчёта: " + ex.Message +
+                    "\r\n\r\nПодробности (стек вызовов) записаны в файл RengaHeat_init.log " +
+                    "в папке плагина.");
+            }
+            catch { /* не даём вторичному сбою UI перекрыть исходную ошибку */ }
         }
     }
 

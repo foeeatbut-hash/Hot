@@ -50,18 +50,28 @@ public sealed class RengaModelGateway : IModelGateway
         var objects = rengaModel.GetObjects();
         for (var i = 0; i < objects.Count; i++)
         {
-            var mo = objects.GetByIndex(i);
-            var obj = new NetworkObject
+            // Один «плохой» объект модели не должен ронять весь расчёт — читаем защищённо.
+            try
             {
-                Id = mo.UniqueIdS,
-                Name = mo.Name ?? string.Empty,
-                RengaTypeId = mo.ObjectTypeS,
-            };
-            ReadProperties(mo, obj);
-            ReadParameters(mo, obj);
-            ReadQuantities(mo, obj);
-            ReadPorts(mo, obj);
-            model.Add(obj);
+                var mo = objects.GetByIndex(i);
+                if (mo is null) continue;
+                var obj = new NetworkObject
+                {
+                    Id = mo.UniqueIdS,
+                    Name = mo.Name ?? string.Empty,
+                    RengaTypeId = mo.ObjectTypeS,
+                };
+                ReadProperties(mo, obj);
+                ReadParameters(mo, obj);
+                ReadQuantities(mo, obj);
+                ReadPorts(mo, obj);
+                if (!model.Objects.ContainsKey(obj.Id))
+                    model.Add(obj);
+            }
+            catch
+            {
+                // пропускаем нечитаемый объект; связи по нему просто не построятся
+            }
         }
 
         ReadConnections(rengaModel, objects, model);
@@ -71,7 +81,9 @@ public sealed class RengaModelGateway : IModelGateway
     private static void ReadProperties(Renga.IModelObject mo, NetworkObject item)
     {
         var props = mo.GetProperties();
+        if (props is null) return;
         var ids = props.GetIds();
+        if (ids is null) return;
         for (var i = 0; i < ids.Count; i++)
         {
             var id = ids.Get(i);
@@ -99,7 +111,9 @@ public sealed class RengaModelGateway : IModelGateway
     private static void ReadParameters(Renga.IModelObject mo, NetworkObject item)
     {
         var pars = mo.GetParameters();
+        if (pars is null) return;
         var ids = pars.GetIds();
+        if (ids is null) return;
         for (var i = 0; i < ids.Count; i++)
         {
             var par = pars.Get(ids.Get(i));
@@ -112,15 +126,19 @@ public sealed class RengaModelGateway : IModelGateway
                 Renga.ParameterValueType.ParameterValueType_String => par.GetStringValue(),
                 _ => null,
             };
-            item.Parameters[par.Definition.Name] = value;
+            var name = par.Definition?.Name;      // Definition может быть null у нетипизированных параметров
+            if (!string.IsNullOrEmpty(name))
+                item.Parameters[name] = value;
         }
     }
 
     private static void ReadQuantities(Renga.IModelObject mo, NetworkObject item)
     {
-        var q = mo.GetQuantities().Get(Renga.Quantities.NominalLength);
+        var quantities = mo.GetQuantities();
+        if (quantities is null) return;
+        var q = quantities.Get(Renga.Quantities.NominalLength);
         if (q is not null && q.HasValue() && q.Type == Renga.QuantityType.QuantityType_Length)
-            item.Quantities[q.Name] = q.AsLength(Renga.LengthUnit.LengthUnit_Meters);
+            item.Quantities[q.Name ?? "Длина"] = q.AsLength(Renga.LengthUnit.LengthUnit_Meters);
     }
 
     private static void ReadPorts(Renga.IModelObject mo, NetworkObject item)
@@ -128,7 +146,8 @@ public sealed class RengaModelGateway : IModelGateway
         if (mo is not Renga.IEntityWithPorts withPorts) return;
         for (var i = 0; i < withPorts.Count; i++)
         {
-            var pipeParams = withPorts.GetByIndex(i).PortConnectionParams as Renga.IPortPipeParams;
+            var port = withPorts.GetByIndex(i);
+            var pipeParams = port?.PortConnectionParams as Renga.IPortPipeParams;
             item.Ports.Add(new Port(
                 Id: i.ToString(CultureInfo.InvariantCulture),
                 Dn: pipeParams is null ? null : (int)Math.Round(pipeParams.NominalDiameter),
@@ -142,19 +161,30 @@ public sealed class RengaModelGateway : IModelGateway
         // Связность инженерной сети восстанавливается по параметрам трасс (IRouteParams):
         // источник/приёмник соединения и индексы портов. Стрелка трассы здесь не трактуется как
         // физическое направление — им занимается топология/решатель ядра.
+        var allObjects = rengaModel.GetObjects();
         for (var i = 0; i < objects.Count; i++)
         {
-            if (objects.GetByIndex(i).GetInterfaceByName("IRouteParams") is not Renga.IRouteParams route)
-                continue;
-            var a = rengaModel.GetObjects().GetById(route.SourceModelObjectId);
-            var b = rengaModel.GetObjects().GetById(route.TargetModelObjectId);
-            if (!model.Objects.TryGetValue(a.UniqueIdS, out var na) ||
-                !model.Objects.TryGetValue(b.UniqueIdS, out var nb))
-                continue;
-            var sourcePort = route.SourcePortIndex.ToString(CultureInfo.InvariantCulture);
-            var targetPort = route.TargetPortIndex.ToString(CultureInfo.InvariantCulture);
-            if (na.Ports.Any(p => p.Id == sourcePort) && nb.Ports.Any(p => p.Id == targetPort))
-                model.Connect(na, sourcePort, nb, targetPort);
+            try
+            {
+                var mo = objects.GetByIndex(i);
+                if (mo?.GetInterfaceByName("IRouteParams") is not Renga.IRouteParams route)
+                    continue;
+                // Конец трассы может ссылаться на отсутствующий/несозданный объект — GetById вернёт null.
+                var a = allObjects.GetById(route.SourceModelObjectId);
+                var b = allObjects.GetById(route.TargetModelObjectId);
+                if (a is null || b is null) continue;
+                if (!model.Objects.TryGetValue(a.UniqueIdS, out var na) ||
+                    !model.Objects.TryGetValue(b.UniqueIdS, out var nb))
+                    continue;
+                var sourcePort = route.SourcePortIndex.ToString(CultureInfo.InvariantCulture);
+                var targetPort = route.TargetPortIndex.ToString(CultureInfo.InvariantCulture);
+                if (na.Ports.Any(p => p.Id == sourcePort) && nb.Ports.Any(p => p.Id == targetPort))
+                    model.Connect(na, sourcePort, nb, targetPort);
+            }
+            catch
+            {
+                // одна нечитаемая связь не должна ронять построение сети
+            }
         }
     }
 
