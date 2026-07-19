@@ -34,6 +34,10 @@ public sealed class RengaModelGateway : IModelGateway
     /// <summary>
     /// Инженерные типы объектов Renga (ОВ/ВК/ЭОМ): трубы, фитинги, арматура, воздуховоды,
     /// оборудование, приборы. Архитектура (стены, полы, двери, материалы, помещения) не читается.
+    ///
+    /// Это подсказка, а НЕ единственный критерий: GUID-типы отличаются между версиями/сборками
+    /// Renga, поэтому основной признак инженерного объекта — наличие портов трубопровода/воздуховода
+    /// или параметров трассы (см. IsEngineering). Так фильтр не «слепнет» при несовпадении GUID.
     /// </summary>
     private static readonly HashSet<Guid> EngineeringTypes = new()
     {
@@ -44,6 +48,19 @@ public sealed class RengaModelGateway : IModelGateway
         Renga.EntityTypes.WiringAccessory, Renga.EntityTypes.ElectricDistributionBoard,
         Renga.EntityTypes.ElectricalCircuitLine,
     };
+
+    /// <summary>
+    /// Инженерный объект — по сути, а не по жёсткому списку GUID: либо известный инженерный тип,
+    /// либо у объекта есть порты трубопровода/воздуховода (IEntityWithPorts), либо параметры трассы
+    /// (IRouteParams). Архитектура (стены, двери, помещения) портов трубопровода не имеет и отсеивается.
+    /// </summary>
+    private static bool IsEngineering(Renga.IModelObject mo)
+    {
+        try { if (EngineeringTypes.Contains(mo.ObjectType)) return true; } catch { /* тип нечитаем */ }
+        try { if (mo is Renga.IEntityWithPorts { Count: > 0 }) return true; } catch { /* нет портов */ }
+        try { if (mo.GetInterfaceByName("IRouteParams") is Renga.IRouteParams) return true; } catch { /* нет трассы */ }
+        return false;
+    }
 
     public GatewayCapabilities Capabilities { get; } = new(
         CanWriteProperties: false, CanChangePipeStyle: false, CanWriteValvePreset: false,
@@ -62,6 +79,9 @@ public sealed class RengaModelGateway : IModelGateway
 
         var rengaModel = project.Model;
         var objects = rengaModel.GetObjects();
+        // Диагностика: распределение типов (всего/распознано инженерными/пример) — пишется в лог,
+        // чтобы при пустом результате сразу видеть реальные GUID-типы модели.
+        var tally = new Dictionary<Guid, (int Total, int Kept, string Sample)>();
         for (var i = 0; i < objects.Count; i++)
         {
             // Один «плохой» объект модели не должен ронять весь расчёт — читаем защищённо.
@@ -69,7 +89,14 @@ public sealed class RengaModelGateway : IModelGateway
             {
                 var mo = objects.GetByIndex(i);
                 if (mo is null) continue;
-                if (!EngineeringTypes.Contains(mo.ObjectType)) continue;   // только инженерные объекты
+                var eng = IsEngineering(mo);
+
+                Guid type; try { type = mo.ObjectType; } catch { type = Guid.Empty; }
+                tally.TryGetValue(type, out var t);
+                tally[type] = (t.Total + 1, t.Kept + (eng ? 1 : 0),
+                    string.IsNullOrEmpty(t.Sample) ? (SafeName(mo)) : t.Sample);
+
+                if (!eng) continue;   // только инженерные объекты
                 var obj = new NetworkObject
                 {
                     Id = mo.UniqueIdS,
@@ -89,8 +116,39 @@ public sealed class RengaModelGateway : IModelGateway
             }
         }
 
+        DumpTypeDiagnostics(tally, model.Objects.Count);
         ReadConnections(rengaModel, objects, model);
         return model;
+    }
+
+    private static string SafeName(Renga.IModelObject mo)
+    {
+        try { return mo.Name ?? ""; } catch { return ""; }
+    }
+
+    /// <summary>
+    /// Пишет распределение GUID-типов модели в %TEMP%\RengaHeat_types.log (перезаписью).
+    /// Формат строки: «всего / инженерных : GUID : пример имени». По этому файлу видно, какие
+    /// типы есть в проекте и почему объект попал/не попал в инженерную выборку.
+    /// </summary>
+    private static void DumpTypeDiagnostics(
+        Dictionary<Guid, (int Total, int Kept, string Sample)> tally, int keptTotal)
+    {
+        try
+        {
+            var lines = new List<string>
+            {
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] RengaHeat: распределение типов объектов модели",
+                $"Всего типов: {tally.Count};  инженерных объектов прочитано: {keptTotal}",
+                "  всего / инж. : GUID типа : пример имени",
+                "  ------------------------------------------",
+            };
+            foreach (var kv in tally.OrderByDescending(kv => kv.Value.Total))
+                lines.Add($"  {kv.Value.Total,7} / {kv.Value.Kept,-7} : {kv.Key} : {kv.Value.Sample}");
+            var path = Path.Combine(Path.GetTempPath(), "RengaHeat_types.log");
+            File.WriteAllText(path, string.Join(Environment.NewLine, lines));
+        }
+        catch { /* диагностика не должна ронять чтение модели */ }
     }
 
     private static void ReadProperties(Renga.IModelObject mo, NetworkObject item)
