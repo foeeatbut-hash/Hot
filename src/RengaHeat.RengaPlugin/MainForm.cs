@@ -269,7 +269,7 @@ public sealed class MainForm : Form
         var classifier = SessionFactory.DefaultClassifier();
         foreach (var (typeS, role) in _config.ResolvedTypeRoles())
             classifier.AddRule(new RoleRule($"Тип Renga → {RoleNames.Of(role)}",
-                new RoleCriteria { RengaTypeId = typeS }, role, priority: 50));
+                new RoleCriteria { RengaTypeId = typeS }, role, 50));
 
         var names = new List<string>();
         if (!string.IsNullOrWhiteSpace(_config.LoadPropertyName)) names.Add(_config.LoadPropertyName!);
