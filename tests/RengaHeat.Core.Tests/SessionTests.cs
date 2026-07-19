@@ -110,4 +110,29 @@ public class SessionTests
         Assert.NotNull(record);
         Assert.Contains("Радиатор", record!.Explain());
     }
+
+    [Fact]
+    public void ProfileOverride_ChangesEffectiveProfile()
+    {
+        var baseProfile = RequirementsProfile.Novosaratovka();
+        var over = new ProfileOverride { HeatingSupplyC = 95, HeatingReturnC = 70, MaxVelocityMainMS = 1.5 };
+        Assert.True(over.Any);
+        var eff = over.ApplyTo(baseProfile);
+        Assert.Equal(95, eff.HeatingSchedule.SupplyC);
+        Assert.Equal(70, eff.HeatingSchedule.ReturnC);
+        Assert.Equal(1.5, eff.MaxVelocityMainMS);
+        // Незаданные параметры унаследованы от базового профиля
+        Assert.Equal(baseProfile.MaxApartmentsPerManifold, eff.MaxApartmentsPerManifold);
+        Assert.Equal(baseProfile.VentilationSchedule.SupplyC, eff.VentilationSchedule.SupplyC);
+    }
+
+    [Fact]
+    public void ProfileOverride_Empty_LeavesProfileUnchanged()
+    {
+        var baseProfile = RequirementsProfile.Novosaratovka();
+        var eff = new ProfileOverride().ApplyTo(baseProfile);
+        Assert.False(new ProfileOverride().Any);
+        Assert.Equal(baseProfile.HeatingSchedule.DeltaT, eff.HeatingSchedule.DeltaT);
+        Assert.Equal(baseProfile.MaxSpecificLossPaM, eff.MaxSpecificLossPaM);
+    }
 }

@@ -5,6 +5,7 @@ using RengaHeat.Core.Calculation;
 using RengaHeat.Core.Classification;
 using RengaHeat.Core.Mapping;
 using RengaHeat.Core.Model;
+using RengaHeat.Core.Profiles;
 using RengaHeat.Core.Reporting;
 using RengaHeat.Core.Validation;
 
@@ -29,7 +30,7 @@ public sealed class MainForm : Form
 
     // Видимый штамп версии плагина. Увеличивайте при каждом изменении UI — по нему сразу
     // видно в заголовке окна, свежая DLL загружена или старая.
-    private const string Build = "сборка 7";
+    private const string Build = "сборка 8";
 
     private readonly Font _ui = new("Segoe UI", 9f);
     private readonly Font _uiBold = new("Segoe UI", 9f, FontStyle.Bold);
@@ -54,7 +55,7 @@ public sealed class MainForm : Form
 
     private static readonly string[] Sections =
     {
-        "Обзор", "Профиль", "Классификатор", "Сопоставление",
+        "Обзор", "Исходные", "Классификатор", "Сопоставление",
         "Проверка модели", "Расчёт", "Балансировка", "Предпросмотр изменений", "Отчёты и экспорт",
     };
 
@@ -213,10 +214,12 @@ public sealed class MainForm : Form
 
     private void UpdateStatus()
     {
+        var p = EffectiveProfile();
+        var over = _config.Overrides.Any ? " (изменён)" : "";
         var model = _model is null ? "модель не загружена" : $"объектов: {_model.Objects.Count}, связей: {_model.Connections.Count}";
         var ready = _outcome is null ? "расчёт не выполнялся"
             : (_outcome.IsReady ? "✓ готово" : "⚠ есть замечания");
-        _status.Text = $"Профиль: {_ctx.Profile.Name} · график {_ctx.Profile.HeatingSchedule}     |     {model}     |     {ready}";
+        _status.Text = $"Профиль: {p.Name}{over} · график {p.HeatingSchedule}     |     {model}     |     {ready}";
     }
 
     private void ShowSection(string section)
@@ -225,7 +228,7 @@ public sealed class MainForm : Form
         var body = section switch
         {
             "Обзор" => BuildOverview(),
-            "Профиль" => BuildProfile(),
+            "Исходные" => BuildInputs(),
             "Классификатор" => BuildClassifier(),
             "Сопоставление" => BuildMapping(),
             "Проверка модели" => BuildValidation(),
@@ -327,38 +330,162 @@ public sealed class MainForm : Form
 
         // Сопоставление: свойство инженера по каждому полю в начало цепочки, затем стандартный резерв.
         var mappings = SessionFactory.MappingsFor(_config.FieldProperties, DefaultLoadNames);
+        var profile = EffectiveProfile();
 
         return new CalculationSession
         {
-            Profile = _ctx.Profile,
+            Profile = profile,
             Mappings = mappings,
             Classifier = classifier,
-            Rules = SessionFactory.RuleEngineFor(_ctx.Profile),
-            Scenario = _ctx.Scenario,
+            Rules = SessionFactory.RuleEngineFor(profile),
+            Scenario = EffectiveScenario(),
         };
     }
 
-    private Control BuildProfile()
+    /// <summary>Профиль с учётом пользовательских исходных данных (раздел «Исходные»).</summary>
+    private RequirementsProfile EffectiveProfile() => _config.Overrides.ApplyTo(_ctx.Profile);
+
+    private static readonly (string Name, CalculationScenario Scenario)[] Scenarios =
     {
-        var p = _ctx.Profile;
-        var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
-        panel.Controls.Add(Card($"{p.Name} (вер. {p.Version})",
-            $"Источник: {p.SourceDocument}\r\n\r\n" +
-            $"График отопления:            {p.HeatingSchedule}\r\n" +
-            $"График теплоснабжения вент.: {p.VentilationSchedule}\r\n\r\n" +
-            $"Не более квартир на коллектор:      {p.MaxApartmentsPerManifold}\r\n" +
-            $"Не более коллекторов в секции:      {p.MaxManifoldsPerSection}\r\n" +
-            $"Не более приборов в кольце:         {p.MaxDevicesPerHorizontalLoop}\r\n" +
-            $"Этажей нижней зоны (макс.):         {p.MaxFloorsLowerZone}\r\n" +
-            $"Запас мощности (терморег./тех.):    {p.PowerMarginThermostaticPercent} % / {p.PowerMarginTechnicalPercent} %\r\n" +
-            $"Длина радиатора в квартире (макс.): {p.MaxApartmentRadiatorLengthM * 1000:0} мм\r\n" +
-            $"Сталь ВГП до Ду{p.MaxVgpDn}, выше — электросварные; поквартирные PE-Xa до Ду{p.MaxApartmentPexDn}\r\n" +
-            $"Регулятор перепада перед коллектором: {(p.RequireDprBeforeManifold ? "требуется" : "нет")}\r\n" +
-            $"Теплосчётчик на обратке:             {(p.HeatMeterOnReturn ? "да" : "нет")}\r\n\r\n" +
-            $"Лимит скорости (квартиры/магистрали): {p.MaxVelocityApartmentMS} / {p.MaxVelocityMainMS} м/с\r\n" +
-            $"Лимит удельных потерь:                {p.MaxSpecificLossPaM} Па/м"));
-        panel.Controls.Add(Info("Профиль применяется как данные (лимиты, запасы, требования ЧТУ). Редактирование — в следующей версии."));
-        return panel;
+        ("Базовый", CalculationScenario.Base),
+        ("Экономичный", CalculationScenario.Economy),
+        ("Тихий", CalculationScenario.Quiet),
+    };
+
+    private CalculationScenario EffectiveScenario()
+    {
+        foreach (var s in Scenarios)
+            if (s.Name == _config.ScenarioName) return s.Scenario;
+        return CalculationScenario.Base;
+    }
+
+    /// <summary>Одна редактируемая строка исходных: показать значение профиля и применить ввод к переопределению.</summary>
+    private sealed record InputRow(string Label, string Unit,
+        Func<RequirementsProfile, string> Show, Func<ProfileOverride, string, bool> Apply);
+
+    private static string FmtNum(double d) => d.ToString("0.####", System.Globalization.CultureInfo.CurrentCulture);
+    private static bool PD(string s, out double d) => double.TryParse(s.Replace(',', '.'),
+        System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out d);
+    private static bool PB(string s, out bool b)
+    {
+        s = s.Trim().ToLowerInvariant();
+        if (s is "да" or "true" or "1" or "+") { b = true; return true; }
+        if (s is "нет" or "false" or "0" or "-") { b = false; return true; }
+        b = false; return false;
+    }
+
+    private InputRow Dbl(string label, string unit, Func<RequirementsProfile, double> get, Action<ProfileOverride, double?> set)
+        => new(label, unit, p => FmtNum(get(p)),
+            (o, t) => { t = t.Trim(); if (t.Length == 0) { set(o, null); return true; } if (!PD(t, out var d)) return false; set(o, d); return true; });
+    private InputRow Int(string label, string unit, Func<RequirementsProfile, int> get, Action<ProfileOverride, int?> set)
+        => new(label, unit, p => get(p).ToString(),
+            (o, t) => { t = t.Trim(); if (t.Length == 0) { set(o, null); return true; } if (!int.TryParse(t, out var i)) return false; set(o, i); return true; });
+    private InputRow Bool(string label, Func<RequirementsProfile, bool> get, Action<ProfileOverride, bool?> set)
+        => new(label, "да/нет", p => get(p) ? "да" : "нет",
+            (o, t) => { t = t.Trim(); if (t.Length == 0) { set(o, null); return true; } if (!PB(t, out var b)) return false; set(o, b); return true; });
+
+    private List<InputRow> InputDescriptors() => new()
+    {
+        Dbl("График отопления — подача", "°C", p => p.HeatingSchedule.SupplyC, (o, v) => o.HeatingSupplyC = v),
+        Dbl("График отопления — обратка", "°C", p => p.HeatingSchedule.ReturnC, (o, v) => o.HeatingReturnC = v),
+        Dbl("График вентиляции — подача", "°C", p => p.VentilationSchedule.SupplyC, (o, v) => o.VentSupplyC = v),
+        Dbl("График вентиляции — обратка", "°C", p => p.VentilationSchedule.ReturnC, (o, v) => o.VentReturnC = v),
+        Int("Не более квартир на коллектор", "шт", p => p.MaxApartmentsPerManifold, (o, v) => o.MaxApartmentsPerManifold = v),
+        Int("Не более коллекторов в секции", "шт", p => p.MaxManifoldsPerSection, (o, v) => o.MaxManifoldsPerSection = v),
+        Int("Не более приборов в кольце", "шт", p => p.MaxDevicesPerHorizontalLoop, (o, v) => o.MaxDevicesPerHorizontalLoop = v),
+        Int("Этажей нижней зоны (макс.)", "эт", p => p.MaxFloorsLowerZone, (o, v) => o.MaxFloorsLowerZone = v),
+        Dbl("Запас мощности (терморегуляторы)", "%", p => p.PowerMarginThermostaticPercent, (o, v) => o.PowerMarginThermostaticPercent = v),
+        Dbl("Запас мощности (технические)", "%", p => p.PowerMarginTechnicalPercent, (o, v) => o.PowerMarginTechnicalPercent = v),
+        Dbl("Длина радиатора в квартире (макс.)", "м", p => p.MaxApartmentRadiatorLengthM, (o, v) => o.MaxApartmentRadiatorLengthM = v),
+        Int("ВГП сталь до Ду", "мм", p => p.MaxVgpDn, (o, v) => o.MaxVgpDn = v),
+        Int("Поквартирные PE-Xa до Ду", "мм", p => p.MaxApartmentPexDn, (o, v) => o.MaxApartmentPexDn = v),
+        Bool("Регулятор перепада перед коллектором", p => p.RequireDprBeforeManifold, (o, v) => o.RequireDprBeforeManifold = v),
+        Bool("Теплосчётчик на обратке", p => p.HeatMeterOnReturn, (o, v) => o.HeatMeterOnReturn = v),
+        Dbl("Лимит скорости — квартиры", "м/с", p => p.MaxVelocityApartmentMS, (o, v) => o.MaxVelocityApartmentMS = v),
+        Dbl("Лимит скорости — магистрали", "м/с", p => p.MaxVelocityMainMS, (o, v) => o.MaxVelocityMainMS = v),
+        Dbl("Лимит удельных потерь", "Па/м", p => p.MaxSpecificLossPaM, (o, v) => o.MaxSpecificLossPaM = v),
+    };
+
+    private Control BuildInputs()
+    {
+        var baseP = _ctx.Profile;      // ЧТУ (эталон)
+        var rows = InputDescriptors();
+
+        // Шапка: профиль + выбор сценария
+        var header = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
+        header.Controls.Add(new Label { Text = $"Профиль {baseP.Name} (вер. {baseP.Version}) · {baseP.SourceDocument}", AutoSize = true, Font = _ui, ForeColor = TextDark, Margin = new Padding(0, 9, 20, 0) });
+        header.Controls.Add(new Label { Text = "Сценарий:", AutoSize = true, Font = _ui, ForeColor = TextDark, Margin = new Padding(0, 9, 4, 0) });
+        var scenario = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 150, Font = _ui, Margin = new Padding(0, 5, 0, 0) };
+        foreach (var s in Scenarios) scenario.Items.Add(s.Name);
+        scenario.SelectedItem = _config.ScenarioName ?? "Базовый";
+        if (scenario.SelectedIndex < 0) scenario.SelectedIndex = 0;
+        scenario.SelectedIndexChanged += (_, _) => { _config.ScenarioName = scenario.SelectedItem?.ToString(); _config.Save(); };
+        header.Controls.Add(scenario);
+
+        var grid = new DataGridView
+        {
+            Dock = DockStyle.Fill, AllowUserToAddRows = false, RowHeadersVisible = false,
+            SelectionMode = DataGridViewSelectionMode.CellSelect,
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, EditMode = DataGridViewEditMode.EditOnEnter,
+        };
+        StyleGrid(grid);
+        var cName = new DataGridViewTextBoxColumn { HeaderText = "Параметр", ReadOnly = true, FillWeight = 44 };
+        var cVal = new DataGridViewTextBoxColumn { HeaderText = "Значение", FillWeight = 18 };
+        var cUnit = new DataGridViewTextBoxColumn { HeaderText = "Ед.", ReadOnly = true, FillWeight = 12 };
+        var cBase = new DataGridViewTextBoxColumn { HeaderText = "По ЧТУ", ReadOnly = true, FillWeight = 18 };
+        grid.Columns.AddRange(cName, cVal, cUnit, cBase);
+
+        // Страж против повторного входа: перерисовка/сброс сами меняют ячейки и иначе вызвали бы
+        // обработчик рекурсивно (и ложно пометили бы профиль изменённым).
+        var updating = false;
+        void Fill()
+        {
+            updating = true;
+            grid.Rows.Clear();
+            var eff = EffectiveProfile();
+            for (var i = 0; i < rows.Count; i++)
+            {
+                var r = rows[i];
+                var row = grid.Rows[grid.Rows.Add(r.Label, r.Show(eff), r.Unit, r.Show(baseP))];
+                row.Tag = i;
+            }
+            updating = false;
+        }
+        Fill();
+
+        grid.CurrentCellDirtyStateChanged += (_, _) =>
+        {
+            if (grid.IsCurrentCellDirty) grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
+        };
+        grid.CellValueChanged += (_, e) =>
+        {
+            if (updating || e.RowIndex < 0 || grid.Columns[e.ColumnIndex] != cVal) return;
+            var idx = grid.Rows[e.RowIndex].Tag is int t ? t : -1;
+            if (idx < 0) return;
+            var text = grid.Rows[e.RowIndex].Cells[cVal.Index].Value?.ToString() ?? "";
+            var ok = rows[idx].Apply(_config.Overrides, text);
+            if (ok) _config.Save();
+            else Msg("Некорректное значение — оставлено прежнее.", MessageBoxIcon.Warning);
+            // Показать нормализованное/унаследованное значение без повторного входа.
+            updating = true;
+            grid.Rows[e.RowIndex].Cells[cVal.Index].Value = rows[idx].Show(EffectiveProfile());
+            updating = false;
+        };
+
+        var apply = PrimaryButton("Применить и пересчитать");
+        apply.Click += (_, _) => RunCalculation();
+        var reset = SecondaryButton("Сбросить к ЧТУ");
+        reset.Click += (_, _) =>
+        {
+            _config.Overrides = new ProfileOverride();
+            _config.Save();
+            Fill();
+        };
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
+        buttons.Controls.Add(apply);
+        buttons.Controls.Add(reset);
+
+        return VStack(header, 40, grid, buttons, 44);
     }
 
     private Control BuildClassifier()
@@ -548,8 +675,21 @@ public sealed class MainForm : Form
             var grid = MakeGrid(devTable, "ObjectId");
             grid.Dock = DockStyle.Fill;
 
-            page.Controls.Add(grid);
-            page.Controls.Add(summary);
+            // «Почему это значение?» — журнал происхождения по выбранному прибору (требование ЧТУ).
+            var why = SecondaryButton("Почему это значение?");
+            why.Width = 200; why.Dock = DockStyle.Left;
+            why.Click += (_, _) =>
+            {
+                var id = grid.CurrentRow?.Cells["ObjectId"].Value?.ToString();
+                if (string.IsNullOrEmpty(id)) { Msg("Выберите прибор в таблице."); return; }
+                ShowProvenance(id);
+            };
+            var bottomBar = new Panel { Dock = DockStyle.Bottom, Height = 40, BackColor = PanelBg, Padding = new Padding(0, 6, 0, 4) };
+            bottomBar.Controls.Add(why);
+
+            page.Controls.Add(grid);        // центр
+            page.Controls.Add(bottomBar);   // низ
+            page.Controls.Add(summary);     // верх
             tabs.TabPages.Add(page);
         }
         return tabs;
@@ -751,6 +891,42 @@ public sealed class MainForm : Form
 
     private void Msg(string text, MessageBoxIcon icon = MessageBoxIcon.Information) =>
         MessageBox.Show(this, text, "RengaHeat", MessageBoxButtons.OK, icon);
+
+    /// <summary>Журнал происхождения значений объекта — команда «Почему это значение?».</summary>
+    private void ShowProvenance(string objectId)
+    {
+        if (_outcome is null) return;
+        var records = _outcome.ValueJournal.Where(r => r.ObjectId == objectId).ToList();
+        var name = _model is not null && _model.Objects.TryGetValue(objectId, out var mo) ? mo.Name : objectId;
+        var text = records.Count == 0
+            ? "Нет записей журнала для объекта (значение не разрешалось для этого прибора)."
+            : string.Join("\r\n\r\n", records.Select(r => r.Explain()));
+        ShowTextDialog($"Почему это значение? — {name}", text);
+    }
+
+    /// <summary>Модальное окно с прокручиваемым текстом (журнал, пояснения).</summary>
+    private void ShowTextDialog(string title, string text)
+    {
+        using var dlg = new Form
+        {
+            Text = title, Width = 740, Height = 480, StartPosition = FormStartPosition.CenterParent,
+            MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false, BackColor = NavBg, Font = _ui,
+        };
+        var box = new TextBox
+        {
+            Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill,
+            BorderStyle = BorderStyle.None, BackColor = PanelBg, Font = _ui, Text = text, WordWrap = true,
+        };
+        var pad = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12), BackColor = PanelBg };
+        pad.Controls.Add(box);
+        var close = new Button { Text = "Закрыть", Dock = DockStyle.Right, Width = 100, Height = 28, FlatStyle = FlatStyle.System };
+        close.Click += (_, _) => dlg.Close();
+        var bottom = new Panel { Dock = DockStyle.Bottom, Height = 44, Padding = new Padding(8), BackColor = NavBg };
+        bottom.Controls.Add(close);
+        dlg.Controls.Add(pad);
+        dlg.Controls.Add(bottom);
+        dlg.ShowDialog(this);
+    }
 
     private static string StatusText(FindingStatus s) => s switch
     {

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using RengaHeat.Core.Model;
+using RengaHeat.Core.Profiles;
 
 namespace RengaHeat.RengaPlugin;
 
@@ -23,6 +24,12 @@ public sealed class SessionConfig
     /// (длина, диаметр, шероховатость, Kv, ζ, …), а не только нагрузку.
     /// </summary>
     public Dictionary<string, string> FieldProperties { get; set; } = new();
+
+    /// <summary>Пользовательские исходные данные (переопределения профиля из раздела «Исходные»).</summary>
+    public ProfileOverride Overrides { get; set; } = new();
+
+    /// <summary>Имя расчётного сценария (Базовый/Экономичный/Тихий). Пусто — базовый.</summary>
+    public string? ScenarioName { get; set; }
 
     public static string DefaultPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RengaHeat", "config.json");
