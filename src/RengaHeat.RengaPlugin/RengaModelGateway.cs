@@ -141,6 +141,7 @@ public sealed class RengaModelGateway : IModelGateway
         var routes = new List<(int Src, int Tgt, int SrcPort, int TgtPort)>();
 
         var count = objects.Count;
+        var unreadable = 0;
         for (var i = 0; i < count; i++)
         {
             try
@@ -208,8 +209,10 @@ public sealed class RengaModelGateway : IModelGateway
 
                 if (!model.Objects.ContainsKey(uid)) model.Add(obj);
             }
-            catch { /* нечитаемый объект пропускаем */ }
+            catch { unreadable++; /* нечитаемый объект пропускаем, но считаем */ }
         }
+        if (unreadable > 0)
+            UiLog.Write("чтение", $"Нечитаемых объектов пропущено: {unreadable}.");
 
         // Имена уровней (уровень мог встретиться в коллекции позже своих объектов).
         foreach (var obj in model.Objects.Values)
@@ -457,10 +460,15 @@ public sealed class RengaModelGateway : IModelGateway
             var project = _application.Project;
             if (project is null) return;
             var mo = project.Model.GetObjects().GetByUniqueId(guid);
-            if (mo is null) return;
+            if (mo is null)
+            {
+                UiLog.Write("подсветка", $"Объект {uniqueIdS} не найден в модели (удалён?).");
+                return;
+            }
+            UiLog.Write("подсветка", $"Переход к объекту «{mo.Name}» ({uniqueIdS}).");
             _application.Selection.SetSelectedObjects(new[] { mo.Id });
         }
-        catch { /* переход к объекту не должен ронять UI */ }
+        catch (Exception ex) { UiLog.Error("переход к объекту", ex); }
     }
 
     /// <summary>

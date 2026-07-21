@@ -31,7 +31,7 @@ public sealed class MainForm : Form
 
     // Видимый штамп версии плагина. Увеличивайте при каждом изменении UI — по нему сразу
     // видно в заголовке окна, свежая DLL загружена или старая.
-    private const string Build = "сборка 17";
+    private const string Build = "сборка 18";
 
     private readonly Font _ui = new("Segoe UI", 9f);
     private readonly Font _uiBold = new("Segoe UI", 9f, FontStyle.Bold);
@@ -61,9 +61,31 @@ public sealed class MainForm : Form
         "Отчёты и экспорт", "Журнал", "О программе",
     };
 
+    // Глобальные обработчики ставятся один раз на процесс: ни одна необработанная ошибка
+    // (UI-поток, фоновые задачи, домен) не должна пройти мимо журнала.
+    private static bool _globalHandlersWired;
+
     public MainForm(PluginContext ctx)
     {
         _ctx = ctx;
+        RengaHeat.Core.Diagnostics.CoreLog.Sink = UiLog.Write;   // этапы ядра — в общий журнал
+        if (!_globalHandlersWired)
+        {
+            _globalHandlersWired = true;
+            try
+            {
+                Application.ThreadException += (_, e) =>
+                    UiLog.Error("НЕОБРАБОТАННАЯ ошибка UI", e.Exception);
+                AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+                {
+                    if (e.ExceptionObject is Exception ex) UiLog.Error("НЕОБРАБОТАННАЯ ошибка процесса", ex);
+                    else UiLog.Write("ОШИБКА", $"Необработанная ошибка процесса: {e.ExceptionObject}");
+                };
+                System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (_, e) =>
+                    UiLog.Error("НЕОБРАБОТАННАЯ фоновая ошибка", e.Exception);
+            }
+            catch { /* обработчики — лучшая попытка */ }
+        }
         // Штамп сборки в заголовке — чтобы однозначно проверять, что загружена свежая DLL,
         // а не старая копия из кэша Renga/другой папки. Меняется с каждым обновлением плагина.
         Text = $"RengaHeat — гидравлический расчёт отопления · {Build}";
@@ -82,6 +104,29 @@ public sealed class MainForm : Form
         UiLog.Write("окно", $"Открыто окно плагина ({Build}). Настройки: {SessionConfig.DefaultPath}; " +
                             $"уровней выбрано {_config.SelectedLevels.Count}, ручных назначений " +
                             $"{_config.ObjectRoles.Count + _config.ObjectSides.Count}.");
+        FormClosed += (_, _) => UiLog.Write("окно", "Окно плагина закрыто.");
+    }
+
+    /// <summary>
+    /// ВСЕ ошибки и требующие решения замечания расчёта — в журнал построчно (полные тексты),
+    /// предупреждения — по кодам с первым примером. Ничего не остаётся невидимым.
+    /// </summary>
+    private static void LogOutcomeProblems(SessionOutcome o)
+    {
+        const int cap = 60;
+        var problems = o.AllFindings
+            .Where(f => f.Status is FindingStatus.Error or FindingStatus.NeedsDecision)
+            .ToList();
+        foreach (var f in problems.Take(cap))
+            UiLog.Write("ошибка-расчёта", $"[{f.Status}] {f.Code}: {f.Message}" +
+                                          (f.ObjectId is null ? "" : $" (объект {f.ObjectId})"));
+        if (problems.Count > cap)
+            UiLog.Write("ошибка-расчёта", $"…и ещё {problems.Count - cap} (полный список — в «Проверке модели»).");
+
+        foreach (var g in o.AllFindings.Where(f => f.Status == FindingStatus.Warning).GroupBy(f => f.Code))
+            UiLog.Write("предупреждение", $"{g.Key} ×{g.Count()}. Пример: {g.First().Message}");
+        foreach (var a in o.Provenance.Assumptions)
+            UiLog.Write("допущение", a);
     }
 
     /// <summary>
@@ -103,6 +148,7 @@ public sealed class MainForm : Form
             var sw = System.Diagnostics.Stopwatch.StartNew();
             _outcome = RunSessionOn(work);
             UiLog.Write("расчёт", $"Авто-расчёт: {sw.Elapsed.TotalSeconds:0.0} с. {OutcomeSummary(_outcome)}");
+            LogOutcomeProblems(_outcome);
             UpdateStatus();
         }
         catch (Exception ex) { UiLog.Error("авто-расчёт", ex); /* инженер запустит вручную кнопкой ▶ */ }
@@ -313,7 +359,30 @@ public sealed class MainForm : Form
     private void ShowSection(string section)
     {
         _content.Controls.Clear();
-        var body = section switch
+        Control body;
+        try
+        {
+            body = BuildSectionBody(section);
+        }
+        catch (Exception ex)
+        {
+            // Ошибка построения раздела не должна ронять окно — и обязана попасть в журнал.
+            UiLog.Error($"построение раздела «{section}»", ex);
+            body = Info($"Не удалось построить раздел: {ex.Message}\r\n\r\nПодробности (стек) — в разделе «Журнал».");
+        }
+        body.Dock = DockStyle.Fill;
+
+        var inner = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg, Padding = new Padding(20, 14, 20, 16), AutoScroll = true };
+        inner.Controls.Add(body);
+
+        var host = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg };
+        host.Controls.Add(inner);
+        host.Controls.Add(SectionHeader(section));
+        _content.Controls.Add(host);
+    }
+
+    private Control BuildSectionBody(string section) =>
+        section switch
         {
             "Обзор" => BuildOverview(),
             "Исходные" => BuildInputs(),
@@ -330,16 +399,6 @@ public sealed class MainForm : Form
             "О программе" => BuildAbout(),
             _ => Info("Раздел в разработке."),
         };
-        body.Dock = DockStyle.Fill;
-
-        var inner = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg, Padding = new Padding(20, 14, 20, 16), AutoScroll = true };
-        inner.Controls.Add(body);
-
-        var host = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg };
-        host.Controls.Add(inner);
-        host.Controls.Add(SectionHeader(section));
-        _content.Controls.Add(host);
-    }
 
     private Panel SectionHeader(string section)
     {
@@ -414,6 +473,7 @@ public sealed class MainForm : Form
                                   $"{work.Connections.Count} связей (выбрано уровней: {_config.SelectedLevels.Count}).");
             _outcome = RunSessionOn(work);
             UiLog.Write("расчёт", $"Расчёт завершён за {sw.Elapsed.TotalSeconds:0.0} с. {OutcomeSummary(_outcome)}");
+            LogOutcomeProblems(_outcome);
             UpdateStatus();
             _nav.SelectedItem = "Расчёт";
             ShowSection("Расчёт");

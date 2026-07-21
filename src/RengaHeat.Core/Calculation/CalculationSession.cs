@@ -88,20 +88,48 @@ public sealed class CalculationSession
 
     public SessionOutcome Run(HeatingModel model)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var stage = System.Diagnostics.Stopwatch.StartNew();
+        Diagnostics.CoreLog.Write("ядро",
+            $"Старт сессии: объектов {model.Objects.Count}, связей {model.Connections.Count}; " +
+            $"профиль «{Profile.Name}», сценарий «{Scenario.Name}», допуск сшивки {Profile.AutoStitchToleranceMm:0} мм.");
+
         // 1. Классификация ролей (правила + ОВ_Роль + ручные назначения)
         Classifier.ClassifyAll(model);
+        var roleTally = string.Join(", ", model.Objects.Values
+            .GroupBy(o => o.Role.Role).OrderByDescending(g => g.Count()).Take(12)
+            .Select(g => $"{g.Key}×{g.Count()}"));
+        Diagnostics.CoreLog.Write("ядро", $"Классификация ({stage.ElapsedMilliseconds} мс): {roleTally}.");
+        stage.Restart();
 
         // 1а. Автосоединение свободных точек трассировки, стоящих рядом (до топологии, чтобы
         // сшитые связи участвовали в определении фрагментов, сторон и открытых концов).
         var stitched = ProximityStitcher.Stitch(model, Profile.AutoStitchToleranceMm);
+        Diagnostics.CoreLog.Write("ядро",
+            $"Автосшивка ({stage.ElapsedMilliseconds} мс): соединено {stitched.Count}; связей стало {model.Connections.Count}.");
+        stage.Restart();
 
         // 2. Топология: связность, стороны, направления, источники
         var topology = Direction.Analyze(model);
+        var sideTally = string.Join(", ", topology.Sides.Values
+            .GroupBy(s => s.Side).OrderByDescending(g => g.Count())
+            .Select(g => $"{g.Key}×{g.Count()}"));
+        Diagnostics.CoreLog.Write("ядро",
+            $"Топология ({stage.ElapsedMilliseconds} мс): фрагментов {topology.Fragments.Count}, " +
+            $"источников {topology.Sources.Count} [{string.Join("; ", topology.Sources.Take(5).Select(s => s.Name))}], " +
+            $"открытых концов {topology.OpenEnds.Count}, присоединений к ИТП {topology.ItpConnections.Count}; " +
+            $"стороны: {sideTally}.");
+        stage.Restart();
 
         // 2а. Аудит направлений: ориентация трасс модели против расчётного потока.
         // Расчёт ориентации модели не доверяет — гидравлика идёт по собственным направлениям;
         // несовпадения показываются инженеру для исправления модели.
         var directionAudit = Topology.DirectionAudit.Audit(model, topology);
+        Diagnostics.CoreLog.Write("ядро",
+            $"Аудит направлений ({stage.ElapsedMilliseconds} мс): проверено {directionAudit.Checked}, " +
+            $"совпадает {directionAudit.Confirmed}, против потока {directionAudit.Issues.Count}, " +
+            $"неопределимо {directionAudit.Undecidable}.");
+        stage.Restart();
 
         // 3. Контекст разрешения значений (сопоставление)
         var ctx = ResolutionContextOverride ?? new ResolutionContext
@@ -115,6 +143,10 @@ public sealed class CalculationSession
         // 4. Проверка модели
         var validator = new ModelValidator(Profile);
         var modelFindings = validator.Validate(model, topology);
+        Diagnostics.CoreLog.Write("ядро",
+            $"Проверка модели ({stage.ElapsedMilliseconds} мс): замечаний {modelFindings.Count} " +
+            $"[{string.Join(", ", modelFindings.GroupBy(f => f.Code).OrderByDescending(g => g.Count()).Take(10).Select(g => $"{g.Key}×{g.Count()}"))}].");
+        stage.Restart();
 
         var assumptions = new List<string>(topology.Notes);
         var changeSet = new ChangeSet();
@@ -171,6 +203,13 @@ public sealed class CalculationSession
                 valveDnOf: o => o.Ports.Select(p => p.Dn).FirstOrDefault(d => d is not null) ?? 15);
 
             results.Add(result);
+            Diagnostics.CoreLog.Write("ядро",
+                $"Контур «{result.SourceName}»: приборов {result.Devices.Count}, участков {result.Segments.Count}, " +
+                $"расход {result.TotalFlowKgS * 3600:0.0} кг/ч, напор {result.RequiredHeadPa / 1000:0.00} кПа, " +
+                $"сходимость {(result.Converged ? "да" : "НЕТ")} ({result.Iterations} итер.); " +
+                $"замечаний {result.Findings.Count}.");
+            foreach (var f in result.Findings.Where(f => f.Status is FindingStatus.Error))
+                Diagnostics.CoreLog.Write("ядро-ошибка", $"{f.Code}: {f.Message}");
 
             // Предпросмотр записи результатов (не применяется без подтверждения)
             foreach (var d in result.Devices)
@@ -205,6 +244,10 @@ public sealed class CalculationSession
         };
         outcome.ModelFindings.AddRange(modelFindings);
         outcome.Results.AddRange(results);
+        Diagnostics.CoreLog.Write("ядро",
+            $"Сессия завершена за {sw.Elapsed.TotalSeconds:0.0} с: контуров {results.Count}, " +
+            $"изменений в предпросмотре {changeSet.Changes.Count}, записей журнала значений {resolver.Journal.Count}, " +
+            $"готовность: {(outcome.IsReady ? "ГОТОВО" : "есть замечания")}.");
         return outcome;
     }
 
