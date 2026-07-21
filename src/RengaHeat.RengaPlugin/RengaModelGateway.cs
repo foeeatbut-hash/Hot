@@ -94,12 +94,20 @@ public sealed class RengaModelGateway : IModelGateway
     /// <summary>Текущее выделение в Renga: числовые Id объектов (пусто, если ничего не выделено).</summary>
     public IReadOnlySet<int> GetSelectedObjectIds()
     {
+        var set = new HashSet<int>();
         try
         {
+            // GetSelectedObjects возвращает нетипизированный System.Array (COM SAFEARRAY) —
+            // элементы перебираем и приводим поштучно.
             var sel = _application.Selection?.GetSelectedObjects();
-            return sel is null ? new HashSet<int>() : new HashSet<int>(sel);
+            if (sel is null) return set;
+            foreach (var item in sel)
+                if (item is int id) set.Add(id);
+                else if (item is not null)
+                    try { set.Add(Convert.ToInt32(item, CultureInfo.InvariantCulture)); } catch { }
         }
-        catch { return new HashSet<int>(); }
+        catch { /* выделение недоступно — вернём пустой набор */ }
+        return set;
     }
 
     /// <summary>
