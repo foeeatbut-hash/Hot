@@ -31,7 +31,7 @@ public sealed class MainForm : Form
 
     // Видимый штамп версии плагина. Увеличивайте при каждом изменении UI — по нему сразу
     // видно в заголовке окна, свежая DLL загружена или старая.
-    private const string Build = "сборка 12";
+    private const string Build = "сборка 13";
 
     private readonly Font _ui = new("Segoe UI", 9f);
     private readonly Font _uiBold = new("Segoe UI", 9f, FontStyle.Bold);
@@ -113,10 +113,28 @@ public sealed class MainForm : Form
             if (selectedOnly)
             {
                 if (_ctx.ReadSelectedModel is null) { Msg("Загрузка выделенного доступна только в Renga."); return; }
-                _model = _ctx.ReadSelectedModel();
-                if (_model.Objects.Count == 0)
-                    Msg("В Renga ничего не выделено. Изолируйте нужные уровни, выделите объекты " +
-                        "(например, Ctrl+A выделяет видимые) и повторите загрузку.", MessageBoxIcon.Warning);
+                var selectedModel = _ctx.ReadSelectedModel();
+                if (selectedModel.Objects.Count > 0)
+                {
+                    _model = selectedModel;
+                }
+                else
+                {
+                    // Пустое выделение — не затираем прежнюю модель, а предлагаем полную загрузку.
+                    Cursor = Cursors.Default;
+                    var answer = MessageBox.Show(this,
+                        "В Renga ничего не выделено.\r\n\r\n" +
+                        "Чтобы загрузить только нужное:\r\n" +
+                        "   1) изолируйте уровни ОВ (скрыв АР/КЖ);\r\n" +
+                        "   2) кликните в окно модели и нажмите Ctrl+A — выделятся видимые объекты;\r\n" +
+                        "   3) вернитесь сюда и снова нажмите «Загрузить выделенное».\r\n\r\n" +
+                        "Или загрузить всю модель сейчас? Чтение ускорено, а нужные этажи " +
+                        "можно отметить в разделе «Уровни».",
+                        "RengaHeat", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                    if (answer != DialogResult.Yes) return;
+                    Cursor = Cursors.WaitCursor;
+                    _model = _ctx.ReadModel();
+                }
             }
             else
             {

@@ -30,7 +30,10 @@ public sealed class RengaModelGateway : IModelGateway
     private readonly Renga.IApplication _application;
 
     // Кэш рефлексии свойства уровня: находим один раз, а не на каждый из десятков тысяч объектов.
+    // ВАЖНО: у COM-объектов GetType() возвращает __ComObject без свойств, поэтому LevelId ищем
+    // по типам interop-сборки (ILevelObject / IModelObject), а не по типу экземпляра.
     private static System.Reflection.PropertyInfo? _levelIdProp;
+    private static bool _levelIdOnModelObject;   // LevelId объявлен прямо на IModelObject
     private static bool _levelIdProbed;
 
     // Кэш рефлексии геометрии порта (размещение → начало координат). Свойства ищутся по интерфейсу
@@ -163,9 +166,26 @@ public sealed class RengaModelGateway : IModelGateway
                 var obj = new NetworkObject { Id = uid, Name = mo.Name ?? string.Empty, RengaTypeId = mo.ObjectTypeS };
 
                 // Уровень объекта (LevelId через кэшированную рефлексию — имя резолвим после прохода).
-                if (!_levelIdProbed) { _levelIdProbed = true; try { _levelIdProp = mo.GetType().GetProperty("LevelId"); } catch { } }
+                if (!_levelIdProbed)
+                {
+                    _levelIdProbed = true;
+                    try
+                    {
+                        var direct = typeof(Renga.IModelObject).GetProperty("LevelId");
+                        if (direct is not null) { _levelIdProp = direct; _levelIdOnModelObject = true; }
+                        else
+                            _levelIdProp = typeof(Renga.IModelObject).Assembly
+                                .GetType("Renga.ILevelObject")?.GetProperty("LevelId");
+                    }
+                    catch { /* уровни недоступны в этой версии API */ }
+                }
                 if (_levelIdProp is not null)
-                    try { if (_levelIdProp.GetValue(mo) is int lid) obj.LevelId = lid; } catch { }
+                    try
+                    {
+                        object? owner = _levelIdOnModelObject ? mo : mo.GetInterfaceByName("ILevelObject");
+                        if (owner is not null && _levelIdProp.GetValue(owner) is int lid) obj.LevelId = lid;
+                    }
+                    catch { /* объект вне уровня */ }
 
                 ReadProperties(mo, obj);
                 ReadParameters(mo, obj);
@@ -204,7 +224,8 @@ public sealed class RengaModelGateway : IModelGateway
                 model.Connect(na, sPort, nb, tPort, modeledAtoB: true);
         }
 
-        DumpTypeDiagnostics(tally, model.Objects.Count);
+        var withLevel = model.Objects.Values.Count(o => o.LevelId is not null);
+        DumpTypeDiagnostics(tally, model.Objects.Count, levelNames.Count, withLevel);
         return model;
     }
 
@@ -219,7 +240,8 @@ public sealed class RengaModelGateway : IModelGateway
     /// типы есть в проекте и почему объект попал/не попал в инженерную выборку.
     /// </summary>
     private static void DumpTypeDiagnostics(
-        Dictionary<Guid, (int Total, int Kept, string Sample)> tally, int keptTotal)
+        Dictionary<Guid, (int Total, int Kept, string Sample)> tally, int keptTotal,
+        int levelCount, int objectsWithLevel)
     {
         try
         {
@@ -227,6 +249,8 @@ public sealed class RengaModelGateway : IModelGateway
             {
                 $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] RengaHeat: распределение типов объектов модели",
                 $"Всего типов: {tally.Count};  инженерных объектов прочитано: {keptTotal}",
+                $"Уровней в модели: {levelCount};  объектов с привязкой к уровню: {objectsWithLevel}" +
+                $"  (LevelId {( _levelIdProp is null ? "НЕ найден в API" : "читается: " + _levelIdProp.DeclaringType?.Name )})",
                 "  всего / инж. : GUID типа : пример имени",
                 "  ------------------------------------------",
             };
