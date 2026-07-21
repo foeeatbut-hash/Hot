@@ -111,11 +111,14 @@ public static class SessionFactory
         R("Конвектор", @"конвектор|convector", ObjectRole.Convector, 20);
         R("Полотенцесушитель", @"полотенцесуш|полотенце", ObjectRole.TowelRail, 20);
         R("Воздухонагреватель", @"воздухонагрев|калорифер", ObjectRole.AirHeater, 20);
+        R("Тепловая завеса", @"тепловая завеса|воздушная завеса|завеса теплов", ObjectRole.AirHeater, 20);
 
         // Арматура (по имени/артикулу производителей)
         R("Термостатический клапан", @"термостат|термоклапан|\brtr\b|ra-n", ObjectRole.ThermostaticValve, 22);
         R("Балансировочный клапан", @"баланс|\basv\b|leno|штремакс|\bmsv\b|\busv\b", ObjectRole.BalancingValve, 22);
-        R("Регулятор перепада", @"регулятор перепад|перепад давл|asv-pv", ObjectRole.DifferentialPressureRegulator, 22);
+        // Приоритет выше «балансировочного»: имена вида «Клапан балансировочный … регулятор
+        // перепада давления AUTO» — это регулятор перепада, а не ручной балансировочный клапан.
+        R("Регулятор перепада", @"регулятор перепад|перепад давл|asv-pv", ObjectRole.DifferentialPressureRegulator, 23);
         R("Фильтр", @"фильтр|грязевик|strainer", ObjectRole.Strainer, 22);
         R("Счётчик", @"счётчик|счетчик|теплосч|meter", ObjectRole.HeatMeter, 22);
         R("Запорная арматура", @"вентиль|задвижк|шаровой|запорн|шаровый|\bball\b|\bvalve\b|\bкран\b", ObjectRole.ShutoffValve, 18);

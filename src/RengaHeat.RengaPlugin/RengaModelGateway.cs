@@ -43,6 +43,11 @@ public sealed class RengaModelGateway : IModelGateway
     private static bool _portGeomProbed;
     private static bool _portGeomDumped;   // одноразовый дамп членов Placement/Origin в журнал
 
+    // Кэш рефлексии ссылки объекта на стиль (StyleId): свойства стиля (например «Марка оборудования»
+    // у стиля радиатора) живут на стиле, а не на экземпляре — без них параметризация неполная.
+    private static System.Reflection.PropertyInfo? _objStyleIdProp;
+    private static bool _objStyleProbed;
+
     public RengaModelGateway(Renga.IApplication application) => _application = application;
 
     /// <summary>
@@ -135,6 +140,8 @@ public sealed class RengaModelGateway : IModelGateway
         };
 
         var objects = project.Model.GetObjects();
+        // Свойства стилей проекта (id стиля → свойства): читаются один раз, применяются к объектам.
+        var styleProps = ReadAllStyleProperties(project);
         var tally = new Dictionary<Guid, (int Total, int Kept, string Sample)>();
         var levelNames = new Dictionary<int, string>();
         var idToUid = new Dictionary<int, string>();   // Renga Id → UniqueId, для связей без GetById
@@ -197,6 +204,7 @@ public sealed class RengaModelGateway : IModelGateway
                 ReadParameters(mo, obj);
                 ReadQuantities(mo, obj);
                 ReadPorts(mo, obj);
+                AttachStyleProperties(mo, obj, styleProps);
 
                 // Сташим концы трассы (числовые Id) — резолвим в UniqueId после прохода, без GetById.
                 try
@@ -246,6 +254,9 @@ public sealed class RengaModelGateway : IModelGateway
 
         var withLevel = model.Objects.Values.Count(o => o.LevelId is not null);
         DumpTypeDiagnostics(tally, model.Objects.Count, levelNames.Count, withLevel);
+        var withStyle = model.Objects.Values.Count(o => o.StyleProperties.Count > 0);
+        if (withStyle > 0 || styleProps.Count > 0)
+            UiLog.Write("стили", $"Стилей со свойствами: {styleProps.Count}; объектов, получивших свойства стиля: {withStyle}.");
         var withCoords = model.Objects.Values.SelectMany(o => o.Ports).Count(p => p.HasLocation);
         var totalPorts = model.Objects.Values.Sum(o => o.Ports.Count);
         var freePorts = model.Objects.Values.SelectMany(o => o.Ports).Count(p => !p.IsConnected);
@@ -291,9 +302,105 @@ public sealed class RengaModelGateway : IModelGateway
         catch { /* диагностика не должна ронять чтение модели */ }
     }
 
-    private static void ReadProperties(Renga.IModelObject mo, NetworkObject item)
+    /// <summary>
+    /// Свойства всех стилей проекта: id стиля → свойства. Коллекции стилей ищутся рефлексией по
+    /// IProject (имена свойств со словом Style), их элементы читаются тем же контейнером свойств,
+    /// что и объекты. Так свойство стиля (например «Марка оборудования» у стиля радиатора)
+    /// становится доступным сопоставлению и расчёту.
+    /// </summary>
+    private static Dictionary<int, Dictionary<Guid, PropertyValue>> ReadAllStyleProperties(Renga.IProject project)
     {
-        var props = mo.GetProperties();
+        var result = new Dictionary<int, Dictionary<Guid, PropertyValue>>();
+        try
+        {
+            var found = new List<string>();
+            foreach (var pp in typeof(Renga.IProject).GetProperties())
+            {
+                if (!pp.Name.Contains("Style", StringComparison.OrdinalIgnoreCase)) continue;
+                object? coll;
+                try { coll = pp.GetValue(project); } catch { continue; }
+                if (coll is null) continue;
+
+                var ct = pp.PropertyType;
+                var countProp = ct.GetProperty("Count");
+                var getByIndex = ct.GetMethod("GetByIndex");
+                if (countProp is null || getByIndex is null) continue;
+                int count;
+                try { count = countProp.GetValue(coll) is int c ? c : 0; } catch { continue; }
+                if (count == 0) continue;
+
+                var itemType = getByIndex.ReturnType;
+                var idProp = itemType.GetProperty("Id");
+                var getProps = itemType.GetMethod("GetProperties");
+                if (idProp is null || getProps is null) continue;
+
+                var withProps = 0;
+                for (var i = 0; i < count; i++)
+                {
+                    try
+                    {
+                        var style = getByIndex.Invoke(coll, new object[] { i });
+                        if (style is null || idProp.GetValue(style) is not int sid) continue;
+                        if (getProps.Invoke(style, null) is not Renga.IPropertyContainer pc) continue;
+                        var dict = new Dictionary<Guid, PropertyValue>();
+                        ReadPropertyContainer(pc, dict);
+                        if (dict.Count == 0) continue;
+                        result[sid] = dict;
+                        withProps++;
+                    }
+                    catch { /* нечитаемый стиль пропускаем */ }
+                }
+                found.Add($"{pp.Name}: {count} (со свойствами {withProps})");
+            }
+            if (found.Count > 0)
+                UiLog.Write("стили", "Коллекции стилей: " + string.Join("; ", found) + ".");
+        }
+        catch (Exception ex) { UiLog.Error("чтение стилей проекта", ex); }
+        return result;
+    }
+
+    /// <summary>Привязать свойства стиля к объекту по его StyleId (рефлексия по IModelObject).</summary>
+    private static void AttachStyleProperties(Renga.IModelObject mo, NetworkObject item,
+        Dictionary<int, Dictionary<Guid, PropertyValue>> styleProps)
+    {
+        if (styleProps.Count == 0) return;
+        if (!_objStyleProbed)
+        {
+            _objStyleProbed = true;
+            try
+            {
+                _objStyleIdProp = typeof(Renga.IModelObject).GetProperty("StyleId")
+                                  ?? typeof(Renga.IModelObject).GetProperty("ObjectStyleId");
+                if (_objStyleIdProp is null)
+                    UiLog.Write("api", "IModelObject без свойства StyleId. Свойства IModelObject: " +
+                        string.Join(", ", typeof(Renga.IModelObject).GetProperties().Select(p => $"{p.Name}:{p.PropertyType.Name}")) + ".");
+            }
+            catch { /* стили останутся без привязки */ }
+        }
+
+        int? styleId = null;
+        if (_objStyleIdProp is not null)
+            try { if (_objStyleIdProp.GetValue(mo) is int sid) styleId = sid; } catch { }
+        // Резерв: ссылка на стиль лежит в параметрах объекта (имя содержит «стиль»/style).
+        if (styleId is null)
+            foreach (var (name, value) in item.Parameters)
+                if ((name.Contains("стил", StringComparison.OrdinalIgnoreCase) ||
+                     name.Contains("style", StringComparison.OrdinalIgnoreCase)) && value is int sid)
+                {
+                    styleId = sid;
+                    break;
+                }
+
+        if (styleId is { } s && styleProps.TryGetValue(s, out var props))
+            foreach (var (key, value) in props)
+                item.StyleProperties[key] = value;
+    }
+
+    private static void ReadProperties(Renga.IModelObject mo, NetworkObject item) =>
+        ReadPropertyContainer(mo.GetProperties(), item.Properties);
+
+    private static void ReadPropertyContainer(Renga.IPropertyContainer? props, Dictionary<Guid, PropertyValue> target)
+    {
         if (props is null) return;
         var ids = props.GetIds();
         if (ids is null) return;
@@ -317,7 +424,7 @@ public sealed class RengaModelGateway : IModelGateway
                 Renga.PropertyType.PropertyType_Volume => p.GetVolumeValue(Renga.VolumeUnit.VolumeUnit_Meters3),
                 _ => null,
             };
-            item.Properties[id] = new PropertyValue(id, p.Name ?? id.ToString(), value);
+            target[id] = new PropertyValue(id, p.Name ?? id.ToString(), value);
         }
     }
 
