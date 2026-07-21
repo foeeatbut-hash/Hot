@@ -11,7 +11,7 @@ namespace RengaHeat.RengaPlugin;
 /// </summary>
 public sealed class PluginContext
 {
-    public RequirementsProfile Profile { get; set; } = RequirementsProfile.Novosaratovka();
+    public RequirementsProfile Profile { get; set; } = RequirementsProfile.Default();
     public CalculationScenario Scenario { get; set; } = CalculationScenario.Base;
 
     /// <summary>Прочитать модель из источника (Renga или демо) — вся инженерная модель.</summary>

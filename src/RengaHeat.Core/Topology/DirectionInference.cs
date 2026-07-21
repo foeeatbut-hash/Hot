@@ -135,24 +135,41 @@ public sealed class DirectionInference
         !IsDevice(o) && o.Role.Role is not ObjectRole.HeatSource;
 
     /// <summary>
-    /// Открытые концы: несущие объекты со свободным портом (сеть там обрывается). Присоединения к
-    /// ИТП — открытые концы наибольшего DN (магистральный «выход» из модели). Если DN нигде не задан,
-    /// кандидатами считаются все открытые концы. Логика топологическая — координаты не нужны.
+    /// Открытые концы: несущие объекты со свободным портом (сеть там обрывается). Присоединение к
+    /// ИТП — в первую очередь открытая ТОЧКА ТРАССИРОВКИ (узел, которым сеть «выходит» из модели);
+    /// если таких нет — открытые концы наибольшего DN; если DN нигде не задан — все открытые концы.
+    /// Логика топологическая — координаты не нужны.
     /// </summary>
     private static void DetectOpenEndsAndItp(HeatingModel model, TopologyAnalysis analysis)
     {
         var openEnds = model.Objects.Values
-            .Where(o => !o.ExcludedFromCalculation && o.HasFreePort && IsCarrier(o))
+            .Where(o => !o.ExcludedFromCalculation && IsCarrier(o) &&
+                        (o.HasFreePort ||
+                         // точка трассировки без портов: узел, не соединённый ни с чем, — открытый
+                         (o.Role.Role == ObjectRole.RoutePoint && o.Ports.Count == 0)))
             .ToList();
         analysis.OpenEnds.AddRange(openEnds);
         if (openEnds.Count == 0) return;
 
-        var maxDn = openEnds.Max(o => o.MaxDn);
-        var itp = maxDn > 0
-            ? openEnds.Where(o => o.MaxDn == maxDn).ToList()   // магистральные концы наибольшего DN
-            : openEnds;                                        // DN неизвестен — все концы кандидаты
+        var routePoints = openEnds.Where(o => o.Role.Role == ObjectRole.RoutePoint).ToList();
+        List<NetworkObject> itp;
+        string basis;
+        if (routePoints.Count > 0)
+        {
+            // ИТП — это точка трассировки; при нескольких первым идёт узел наибольшего DN (ввод).
+            itp = routePoints.OrderByDescending(o => o.MaxDn).ToList();
+            basis = "открытые точки трассировки";
+        }
+        else
+        {
+            var maxDn = openEnds.Max(o => o.MaxDn);
+            itp = maxDn > 0
+                ? openEnds.Where(o => o.MaxDn == maxDn).ToList()   // магистральные концы наибольшего DN
+                : openEnds;                                        // DN неизвестен — все концы кандидаты
+            basis = maxDn > 0 ? $"открытые концы Ду{maxDn}" : "все открытые концы";
+        }
         analysis.ItpConnections.AddRange(itp);
-        analysis.Notes.Add($"Открытых концов сети: {openEnds.Count}; присоединений к ИТП (Ду{maxDn}): {itp.Count}.");
+        analysis.Notes.Add($"Открытых концов сети: {openEnds.Count}; присоединений к ИТП ({basis}): {itp.Count}.");
     }
 
     private SideAssignment InferSide(NetworkObject obj, TopologyAnalysis analysis)

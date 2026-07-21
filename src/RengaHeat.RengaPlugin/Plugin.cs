@@ -114,7 +114,7 @@ public sealed class Plugin : Renga.IPlugin
             var gateway = new RengaModelGateway(_application);
             var ctx = new PluginContext
             {
-                Profile = RequirementsProfile.Novosaratovka(),
+                Profile = RequirementsProfile.Default(),
                 ReadModel = gateway.ReadModel,
                 ReadSelectedModel = gateway.ReadSelected,    // читать только выделенное (изолированные уровни)
                 ApplyChanges = null,        // режим только анализа: запись отключена

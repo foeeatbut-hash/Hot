@@ -46,6 +46,7 @@ public enum ObjectRole
     Reducer,                // переход
     Compensator,            // компенсатор
     FixedSupport,           // неподвижная опора
+    RoutePoint,             // точка трассировки (узел сети; открытая — присоединение к ИТП)
 }
 
 /// <summary>Откуда взялась роль объекта — для журнала и уровня доверия.</summary>
@@ -96,6 +97,7 @@ public static class RoleNames
         [ObjectRole.Reducer] = "Переход",
         [ObjectRole.Compensator] = "Компенсатор",
         [ObjectRole.FixedSupport] = "Неподвижная опора",
+        [ObjectRole.RoutePoint] = "Точка трассировки",
     };
 
     public static string Of(ObjectRole role) => Display.GetValueOrDefault(role, role.ToString());

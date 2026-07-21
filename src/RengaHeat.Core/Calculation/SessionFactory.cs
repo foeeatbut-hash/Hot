@@ -124,8 +124,12 @@ public static class SessionFactory
         R("Коллектор подающий", @"коллектор.*подающ|подающ.*коллектор|гребёнк|гребенк", ObjectRole.SupplyManifold, 12);
         R("Коллектор обратный", @"коллектор.*обратн|обратн.*коллектор", ObjectRole.ReturnManifold, 12);
         R("Стояк", @"стояк|riser", ObjectRole.Riser, 10);
-        R("Подающая магистраль", @"подающ|подача|supply", ObjectRole.SupplyMain, 8);
-        R("Обратная магистраль", @"обратн|обратка|return", ObjectRole.ReturnMain, 8);
+        // Т1/Т2 — стандартные имена подающего/обратного трубопроводов систем отопления
+        R("Подающая магистраль", @"подающ|подача|supply|\bт1\b", ObjectRole.SupplyMain, 8);
+        R("Обратная магистраль", @"обратн|обратка|return|\bт2\b", ObjectRole.ReturnMain, 8);
+
+        // Узлы трассировки: открытая точка = кандидат присоединения к ИТП
+        R("Точка трассировки", @"точка трассировк|route point|узел трассы", ObjectRole.RoutePoint, 15);
 
         // Фитинги
         R("Отвод", @"отвод|угольник|elbow|\bbend\b", ObjectRole.Elbow, 6);

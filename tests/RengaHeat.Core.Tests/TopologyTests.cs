@@ -104,6 +104,25 @@ public class TopologyTests
     }
 
     [Fact]
+    public void ItpConnection_PrefersOpenRoutePoint_OverLargestDnPipe()
+    {
+        var b = new ModelBuilder("Точка трассировки как ввод ИТП");
+        var point = b.Add("Точка трассировки 1", ObjectRole.RoutePoint, portCount: 2);
+        var main = b.AddPipe("Магистраль", ObjectRole.SupplyMain, dn: 50);
+        var rad = b.AddRadiator("Радиатор", 1000, new BuildingContext(Apartment: "кв.1"));
+        var tail = b.AddPipe("Тупик Ду50", ObjectRole.Pipe, dn: 50);
+        b.Connect(point, 0, main, 0);   // point.p1 свободен — открытая точка трассировки (ввод)
+        b.Connect(main, 1, rad, 0);
+        b.Connect(rad, 1, tail, 0);     // tail.p1 свободен — конкурирующий конец Ду50
+
+        var analysis = new DirectionInference().Analyze(b.Model);
+
+        // ИТП — открытая точка трассировки, а не труба наибольшего DN.
+        var itp = Assert.Single(analysis.ItpConnections);
+        Assert.Equal(point.Id, itp.Id);
+    }
+
+    [Fact]
     public void FilterByLevels_KeepsSelectedAndNoLevel()
     {
         var model = new HeatingModel { Name = "m" };

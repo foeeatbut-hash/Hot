@@ -232,10 +232,13 @@ public sealed class RengaModelGateway : IModelGateway
         var withLevel = model.Objects.Values.Count(o => o.LevelId is not null);
         DumpTypeDiagnostics(tally, model.Objects.Count, levelNames.Count, withLevel);
         var withCoords = model.Objects.Values.SelectMany(o => o.Ports).Count(p => p.HasLocation);
+        var totalPorts = model.Objects.Values.Sum(o => o.Ports.Count);
+        var freePorts = model.Objects.Values.SelectMany(o => o.Ports).Count(p => !p.IsConnected);
         UiLog.Write("чтение",
             $"Чтение завершено за {sw.Elapsed.TotalSeconds:0.0} с: инженерных объектов {model.Objects.Count}, " +
-            $"связей {model.Connections.Count}, уровней {levelNames.Count}, " +
-            $"с привязкой к уровню {withLevel}, портов с координатами {withCoords} " +
+            $"трасс {routes.Count} → связей {model.Connections.Count}, уровней {levelNames.Count}, " +
+            $"с привязкой к уровню {withLevel}; портов {totalPorts}, из них свободных {freePorts}, " +
+            $"с координатами {withCoords} " +
             $"(LevelId: {(_levelIdProp is null ? "НЕ найден в API" : _levelIdProp.DeclaringType?.Name)}).");
         return model;
     }
@@ -364,8 +367,19 @@ public sealed class RengaModelGateway : IModelGateway
             if (!_portGeomProbed)
             {
                 _portGeomProbed = true;
-                _portPlacementProp = typeof(Renga.IPort).GetProperty("Placement")
-                                     ?? typeof(Renga.IPort).GetProperty("Placement3D");
+                var t = typeof(Renga.IPort);
+                _portPlacementProp = t.GetProperty("Placement") ?? t.GetProperty("Placement3D")
+                                     ?? t.GetProperty("Position") ?? t.GetProperty("Origin");
+                // Размещение не нашлось — фиксируем в журнале весь состав интерфейса IPort,
+                // чтобы по логу было видно, как называется нужное свойство в этой версии API.
+                if (_portPlacementProp is null)
+                    UiLog.Write("api", "IPort без известного свойства размещения. Свойства: " +
+                        string.Join(", ", t.GetProperties().Select(p => $"{p.Name}:{p.PropertyType.Name}")) +
+                        ". Методы: " + string.Join(", ",
+                            t.GetMethods().Where(m => !m.IsSpecialName).Select(m => m.Name)) + ".");
+                else
+                    UiLog.Write("api", $"Размещение порта: IPort.{_portPlacementProp.Name} " +
+                                       $"({_portPlacementProp.PropertyType.Name}).");
             }
             var placement = _portPlacementProp?.GetValue(port);
             if (placement is null) return (null, null, null);

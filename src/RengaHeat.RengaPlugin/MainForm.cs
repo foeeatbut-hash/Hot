@@ -31,7 +31,7 @@ public sealed class MainForm : Form
 
     // Видимый штамп версии плагина. Увеличивайте при каждом изменении UI — по нему сразу
     // видно в заголовке окна, свежая DLL загружена или старая.
-    private const string Build = "сборка 14";
+    private const string Build = "сборка 15";
 
     private readonly Font _ui = new("Segoe UI", 9f);
     private readonly Font _uiBold = new("Segoe UI", 9f, FontStyle.Bold);
@@ -116,11 +116,15 @@ public sealed class MainForm : Form
         var errors = o.AllFindings.Count(f => f.Status == FindingStatus.Error);
         var warnings = o.AllFindings.Count(f => f.Status == FindingStatus.Warning);
         var decisions = o.AllFindings.Count(f => f.Status == FindingStatus.NeedsDecision);
+        var codes = string.Join(", ", o.AllFindings
+            .GroupBy(f => f.Code).OrderByDescending(g => g.Count()).Take(10)
+            .Select(g => $"{g.Key}×{g.Count()}"));
         return $"Источников {o.Topology.Sources.Count}, контуров {o.Results.Count}, " +
                $"фрагментов {o.Topology.Fragments.Count}, автосшивок {o.Stitched.Count}, " +
                $"направлений против потока {o.DirectionAudit.Issues.Count}; " +
                $"ошибок {errors}, предупреждений {warnings}, требуют решения {decisions}; " +
-               $"готовность: {(o.IsReady ? "ГОТОВО" : "есть замечания")}.";
+               $"готовность: {(o.IsReady ? "ГОТОВО" : "есть замечания")}. " +
+               (codes.Length > 0 ? $"Коды замечаний: {codes}." : "Замечаний нет.");
     }
 
     /// <summary>
@@ -552,7 +556,7 @@ public sealed class MainForm : Form
 
     private Control BuildInputs()
     {
-        var baseP = _ctx.Profile;      // ЧТУ (эталон)
+        var baseP = _ctx.Profile;      // базовые значения (эталон для колонки «По умолчанию»)
         var rows = InputDescriptors();
 
         // Шапка: профиль + выбор сценария
@@ -581,7 +585,7 @@ public sealed class MainForm : Form
         var cName = new DataGridViewTextBoxColumn { HeaderText = "Параметр", ReadOnly = true, FillWeight = 44 };
         var cVal = new DataGridViewTextBoxColumn { HeaderText = "Значение", FillWeight = 18 };
         var cUnit = new DataGridViewTextBoxColumn { HeaderText = "Ед.", ReadOnly = true, FillWeight = 12 };
-        var cBase = new DataGridViewTextBoxColumn { HeaderText = "По ЧТУ", ReadOnly = true, FillWeight = 18 };
+        var cBase = new DataGridViewTextBoxColumn { HeaderText = "По умолчанию", ReadOnly = true, FillWeight = 18 };
         grid.Columns.AddRange(cName, cVal, cUnit, cBase);
 
         // Страж против повторного входа: перерисовка/сброс сами меняют ячейки и иначе вызвали бы
@@ -627,12 +631,12 @@ public sealed class MainForm : Form
 
         var apply = PrimaryButton("Применить и пересчитать");
         apply.Click += (_, _) => RunCalculation();
-        var reset = SecondaryButton("Сбросить к ЧТУ");
+        var reset = SecondaryButton("Сбросить значения");
         reset.Click += (_, _) =>
         {
             _config.Overrides = new ProfileOverride();
             _config.Save();
-            UiLog.Write("исходные", "Сброс исходных данных к профилю ЧТУ.");
+            UiLog.Write("исходные", "Сброс исходных данных к значениям по умолчанию.");
             Fill();
         };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
@@ -694,6 +698,7 @@ public sealed class MainForm : Form
     private static readonly MapAssignOption[] MapAssignOptions =
     {
         new("Источник (ИТП)", ObjectRole.HeatSource, null),
+        new("Точка трассировки (ввод от ИТП)", ObjectRole.RoutePoint, null),
         new("Радиатор", ObjectRole.Radiator, null),
         new("Конвектор", ObjectRole.Convector, null),
         new("Полотенцесушитель", ObjectRole.TowelRail, null),
@@ -822,7 +827,12 @@ public sealed class MainForm : Form
             btn.Width = 440; btn.TextAlign = ContentAlignment.MiddleLeft; btn.Margin = new Padding(0, 0, 0, 6);
             btn.Enabled = ids.Count > 0;
             var captured = ids;
-            btn.Click += (_, _) => _ctx.SelectManyInRenga!(captured);
+            var capturedName = name;
+            btn.Click += (_, _) =>
+            {
+                UiLog.Write("карта", $"Подсветка группы «{capturedName}» ({captured.Count} объектов).");
+                _ctx.SelectManyInRenga!(captured);
+            };
             panel.Controls.Add(btn);
         }
 
@@ -907,6 +917,9 @@ public sealed class MainForm : Form
         return VStack(caption, 30, grid, apply, 48);
     }
 
+    /// <summary>Метка пункта «авто» в выпадающих списках свойств.</summary>
+    private const string AutoItem = "— авто —";
+
     private Control BuildMapping()
     {
         if (_model is null) return Info("Модель не загружена.");
@@ -916,6 +929,18 @@ public sealed class MainForm : Form
             .GroupBy(r => r.Field.Key)
             .ToDictionary(g => g.Key, g => string.Join(" → ", g.First().SourceChain.Select(s => s.Kind)));
 
+        // Все имена свойств/параметров, реально существующие в модели, — выбор из списка,
+        // а не набор вслепую. Пример: создали у радиаторов свойство «Мощность» — выбираете его
+        // для поля «Нагрузка прибора», и расчёт берёт число оттуда.
+        var propNames = _model.Objects.Values
+            .SelectMany(o => o.Properties.Values.Select(p => p.Name)
+                .Concat(o.StyleProperties.Values.Select(p => p.Name))
+                .Concat(o.Parameters.Keys))
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(n => n, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
         var grid = new DataGridView
         {
             Dock = DockStyle.Fill, AllowUserToAddRows = false, RowHeadersVisible = false,
@@ -923,8 +948,11 @@ public sealed class MainForm : Form
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, EditMode = DataGridViewEditMode.EditOnEnter,
         };
         StyleGrid(grid);
+        grid.DataError += (_, e) => e.ThrowException = false;   // незнакомое значение не роняет грид
         var cField = new DataGridViewTextBoxColumn { HeaderText = "Расчётное поле", ReadOnly = true, FillWeight = 32 };
-        var cProp = new DataGridViewTextBoxColumn { HeaderText = "Свойство-источник", FillWeight = 24 };
+        var cProp = new DataGridViewComboBoxColumn { HeaderText = "Свойство-источник", FlatStyle = FlatStyle.Flat, FillWeight = 24 };
+        cProp.Items.Add(AutoItem);
+        foreach (var n in propNames) cProp.Items.Add(n);
         var cChain = new DataGridViewTextBoxColumn { HeaderText = "Цепочка резерва", ReadOnly = true, FillWeight = 34 };
         var cUnit = new DataGridViewTextBoxColumn { HeaderText = "Ед.", ReadOnly = true, FillWeight = 10 };
         grid.Columns.AddRange(cField, cProp, cChain, cUnit);
@@ -932,7 +960,9 @@ public sealed class MainForm : Form
         foreach (var f in StandardFields.All)
         {
             var prop = _config.FieldProperties.GetValueOrDefault(f.Key, "");
-            var row = grid.Rows[grid.Rows.Add(f.DisplayName, prop, chains.GetValueOrDefault(f.Key, "—"), f.BaseUnitSymbol)];
+            if (prop.Length > 0 && !cProp.Items.Contains(prop)) cProp.Items.Add(prop);   // сохранённое, но отсутствующее в модели
+            var row = grid.Rows[grid.Rows.Add(f.DisplayName, prop.Length == 0 ? AutoItem : prop,
+                chains.GetValueOrDefault(f.Key, "—"), f.BaseUnitSymbol)];
             row.Tag = f.Key;   // устойчивый ключ поля
         }
 
@@ -945,7 +975,7 @@ public sealed class MainForm : Form
             if (e.RowIndex < 0 || grid.Columns[e.ColumnIndex] != cProp) return;
             var key = grid.Rows[e.RowIndex].Tag as string ?? "";
             var v = grid.Rows[e.RowIndex].Cells[cProp.Index].Value?.ToString()?.Trim() ?? "";
-            if (string.IsNullOrEmpty(v)) _config.FieldProperties.Remove(key);
+            if (string.IsNullOrEmpty(v) || v == AutoItem) { _config.FieldProperties.Remove(key); v = AutoItem; }
             else _config.FieldProperties[key] = v;
             _config.Save();
             UiLog.Write("сопоставление", $"Поле {key} → свойство «{v}».");
@@ -953,14 +983,15 @@ public sealed class MainForm : Form
 
         var caption = new Label
         {
-            Text = "Свойство-источник по каждому полю (пусто — авто-поиск). Оно ставится первым в цепочке резерва.",
+            Text = "Откуда брать каждое расчётное значение: выберите свойство из модели (список — реальные " +
+                   "свойства объектов). Пример: свойство «Мощность» у радиаторов → поле «Нагрузка прибора».",
             Dock = DockStyle.Fill, ForeColor = TextMuted, Font = _ui, TextAlign = ContentAlignment.MiddleLeft,
         };
         var apply = PrimaryButton("Применить и пересчитать");
         apply.Dock = DockStyle.Fill;
         apply.Click += (_, _) => RunCalculation();
 
-        return VStack(caption, 30, grid, apply, 48);
+        return VStack(caption, 44, grid, apply, 48);
     }
 
     /// <summary>Вертикальная раскладка: верх (фикс. высота) / центр (тянется) / низ (фикс., может быть null).</summary>
@@ -978,11 +1009,65 @@ public sealed class MainForm : Form
         return t;
     }
 
+    /// <summary>Что сделать по каждому коду замечания — конкретное действие, а не общие слова.</summary>
+    private static readonly (string Prefix, string Advice)[] FindingAdvice =
+    {
+        ("NET-001", "Сеть распадается на фрагменты: соедините трассы в Renga (или включите/увеличьте автосоединение точек в «Исходных»)."),
+        ("NET-002", "У объекта есть неподключённые порты — соедините его с сетью или подтвердите как границу."),
+        ("SRC-001", "Источник не найден: назначьте объекту роль «Источник (ИТП)» в «Карте» (или поставьте открытую точку трассировки на вводе)."),
+        ("SRC-002", "Несколько источников: проверьте границы зон в «Карте» (группа «Присоединения к ИТП»)."),
+        ("SRC-003", "ИТП принят по открытому концу сети (допущение): проверьте точку в «Карте», при необходимости назначьте вручную."),
+        ("CLS-001", "Роль объекта не определена: задайте в «Классификаторе» (тип → роль) или выделите объекты в Renga и назначьте в «Карте»."),
+        ("CALC", "Не хватает исходных данных: укажите в «Сопоставлении», из какого свойства брать значение (например, «Мощность» для нагрузки)."),
+        ("HYD", "Гидравлика не решается на этом кольце: проверьте связность (подача→прибор→обратка) и диаметры участков."),
+        ("DIR-101", "Ориентация трассы против потока: расчёт уже использует правильное направление; разверните трассу в Renga (список — «Карта»)."),
+        ("DIR", "Направление/сторона не определяется однозначно: назначьте «Сторона: подача/обратка» выделенным объектам в «Карте»."),
+        ("CON-101", "Разрыв закрыт автосоединением (допущение): проверьте место в «Карте» (группа «Автосоединённые разрывы»)."),
+        ("VEL-001", "Превышена скорость: примите рекомендованный Ду из «Расчёта» → «Участки» или увеличьте диаметр в модели."),
+        ("LOSS-001", "Превышены удельные потери: увеличьте диаметр участка (рекомендация — в «Расчёте» → «Участки»)."),
+        ("SIZE-002", "Диаметр участка не подходит под расход: см. колонку «Ду реком.» в «Расчёте»."),
+        ("BAL-001", "Балансировка: подберите/проверьте клапан и преднастройку в разделе «Балансировка»."),
+        ("PUMP-001", "Насос не подобран: проверьте каталог насосов и требуемые расход/напор в «Расчёте»."),
+        ("CTU", "Превышен лимит профиля: измените значение лимита в «Исходных» или исправьте модель."),
+    };
+
+    private static string AdviceFor(string code)
+    {
+        foreach (var (prefix, advice) in FindingAdvice)
+            if (code.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return advice;
+        return "См. текст замечания.";
+    }
+
     private Control BuildValidation()
     {
-        if (_outcome is null) return Info("Замечания появляются после расчёта. Нажмите «Рассчитать» в разделе «Обзор».");
+        if (_outcome is null) return Info("Замечания появляются после расчёта. Нажмите ▶ на панели.");
 
         var all = _outcome.AllFindings.ToList();
+        if (all.Count == 0) return Info("Замечаний нет — модель и расчёт в порядке.");
+
+        // Сводка-уведомления: по каждому коду — сколько, что это значит и что сделать.
+        var groups = all.GroupBy(f => f.Code)
+            .OrderBy(g => g.Min(f => (int)f.Status))     // сначала ошибки, затем решения/предупреждения
+            .ThenByDescending(g => g.Count())
+            .ToList();
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"ЧТО НЕ ТАК И ЧТО СДЕЛАТЬ  (всего замечаний: {all.Count})");
+        sb.AppendLine(new string('─', 100));
+        foreach (var g in groups)
+        {
+            var f = g.First();
+            sb.AppendLine($"{StatusText(f.Status).ToUpperInvariant()} · {g.Key} · {g.Count()} шт.");
+            sb.AppendLine($"   Пример: {f.Message}");
+            sb.AppendLine($"   Действие: {AdviceFor(g.Key)}");
+            sb.AppendLine();
+        }
+        var summaryBox = new TextBox
+        {
+            Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, WordWrap = true,
+            Dock = DockStyle.Fill, BorderStyle = BorderStyle.None, BackColor = PanelBg,
+            Font = new Font("Consolas", 8.75f), Text = sb.ToString(),
+        };
+
         var table = new DataTable();
         table.Columns.Add("Статус");
         table.Columns.Add("Код");
@@ -995,7 +1080,22 @@ public sealed class MainForm : Form
 
         var summary = string.Join("    ", all.GroupBy(f => f.Status).Select(g => $"{StatusText(g.Key)}: {g.Count()}"));
         var note = all.Count > cap ? $"  (показаны первые {cap} из {all.Count})" : "";
-        return WithGrid($"{summary}.{note}  Двойной клик — показать объект в Renga.", table, "ObjectId");
+        var caption = new Label
+        {
+            Text = $"{summary}.{note}  Двойной клик по строке таблицы — показать объект в Renga.",
+            Dock = DockStyle.Fill, ForeColor = TextMuted, Font = _ui, TextAlign = ContentAlignment.MiddleLeft,
+        };
+
+        var t = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = PanelBg };
+        t.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        t.RowStyles.Add(new RowStyle(SizeType.Percent, 42));    // сводка-уведомления
+        t.RowStyles.Add(new RowStyle(SizeType.Percent, 58));    // полная таблица
+        t.Controls.Add(caption, 0, 0);
+        t.Controls.Add(Framed(summaryBox, new Padding(0, 0, 0, 6)), 0, 1);
+        var grid = MakeGrid(table, "ObjectId");
+        grid.Dock = DockStyle.Fill;
+        t.Controls.Add(grid, 0, 2);
+        return t;
     }
 
     private Control BuildCalculation()
@@ -1035,7 +1135,7 @@ public sealed class MainForm : Form
             var grid = MakeGrid(devTable, "ObjectId");
             grid.Dock = DockStyle.Fill;
 
-            // «Почему это значение?» — журнал происхождения по выбранному прибору (требование ЧТУ).
+            // «Почему это значение?» — журнал происхождения значения по выбранному прибору.
             var why = SecondaryButton("Почему это значение?");
             why.Width = 200; why.Dock = DockStyle.Left;
             why.Click += (_, _) =>
@@ -1174,8 +1274,8 @@ public sealed class MainForm : Form
             panel.Controls.Add(SaveButton("Ведомость участков первого контура (.csv)", "RengaHeat_участки.csv",
                 "CSV (*.csv)|*.csv", () => Reports.SegmentsCsv(_outcome!.Results[0])));
         }
-        panel.Controls.Add(Info("\r\nВНИМАНИЕ: RengaHeat не заменяет обязательный расчёт в Sankom/DCad и согласование " +
-                                "арматуры по ЧТУ. Пакет сверки — для проверки методик."));
+        panel.Controls.Add(Info("\r\nПеред выпуском документации проверьте результаты обязательным расчётом " +
+                                "в специализированном ПО. Пакет сверки — для проверки методик."));
         return panel;
     }
 
@@ -1257,15 +1357,15 @@ public sealed class MainForm : Form
             "• Аудит направлений потока и автосоединение близких точек трассировки\r\n" +
             "• Гидравлика по СП: расходы, потери, критическое кольцо, балансировка, насос\r\n" +
             "• Подбор диаметров труб по каталогам под лимиты скорости и удельных потерь\r\n" +
-            "• Журнал «Почему это значение?», отчёты и пакет сверки Sankom/DCad"));
+            "• Журнал «Почему это значение?», сквозной журнал действий, отчёты и экспорт CSV"));
         panel.Controls.Add(Card("Файлы",
             $"Настройки: {SessionConfig.DefaultPath}\r\n" +
             "Диагностика: %TEMP%\\RengaHeat_init.log (запуск), %TEMP%\\RengaHeat_types.log (типы модели),\r\n" +
             "%TEMP%\\RengaHeat_ui.log (полный журнал действий — раздел «Журнал»)"));
         panel.Controls.Add(Card("Ограничение",
-            "Расчёт не является юридической заменой обязательного гидравлического расчёта " +
-            "в Sankom/DCad и согласования арматуры по ЧТУ. Для подтверждения эквивалентности " +
-            "методик используйте пакет сверки (раздел «Отчёты и экспорт»)."));
+            "Перед выпуском документации проверьте результаты обязательным расчётом " +
+            "в специализированном ПО (например, Sankom/DCad): для сверки методик есть " +
+            "пакет сверки в разделе «Отчёты и экспорт»."));
         return panel;
     }
 

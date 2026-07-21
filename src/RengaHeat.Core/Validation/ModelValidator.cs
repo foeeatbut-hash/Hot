@@ -99,7 +99,7 @@ public sealed class ModelValidator(RequirementsProfile profile)
             if (apartments.Count > profile.MaxApartmentsPerManifold)
                 findings.Add(new Finding(FindingStatus.Error, "CTU-001",
                     $"Коллектор «{manifold.Name}» обслуживает {apartments.Count} квартир — " +
-                    $"больше допустимых {profile.MaxApartmentsPerManifold} по {profile.Name}.",
+                    $"больше допустимых {profile.MaxApartmentsPerManifold} по профилю «{profile.Name}».",
                     manifold.Id, manifold.Context.Section));
         }
 
@@ -110,7 +110,7 @@ public sealed class ModelValidator(RequirementsProfile profile)
             if (group.Count() > profile.MaxManifoldsPerSection)
                 findings.Add(new Finding(FindingStatus.Warning, "CTU-002",
                     $"В секции «{group.Key.Section}» {group.Count()} коллекторов — больше " +
-                    $"{profile.MaxManifoldsPerSection}; по {profile.Name} требуется отдельное согласование.",
+                    $"{profile.MaxManifoldsPerSection}; по профилю «{profile.Name}» требуется отдельное согласование.",
                     group.First().Id, group.Key.Section));
         }
     }
@@ -125,7 +125,7 @@ public sealed class ModelValidator(RequirementsProfile profile)
             if (loop.Count() > profile.MaxDevicesPerHorizontalLoop)
                 findings.Add(new Finding(FindingStatus.Error, "CTU-003",
                     $"В кольце квартиры «{loop.Key.Apartment}» {loop.Count()} отопительных приборов — " +
-                    $"больше допустимых {profile.MaxDevicesPerHorizontalLoop} по {profile.Name}.",
+                    $"больше допустимых {profile.MaxDevicesPerHorizontalLoop} по профилю «{profile.Name}».",
                     loop.First().Id, loop.Key.Apartment));
         }
     }
@@ -141,7 +141,7 @@ public sealed class ModelValidator(RequirementsProfile profile)
         if (maxFloor > profile.MaxFloorsLowerZone)
             findings.Add(new Finding(FindingStatus.Warning, "CTU-004",
                 $"В модели есть объекты выше {profile.MaxFloorsLowerZone}-го этажа (до {maxFloor}); " +
-                $"нижняя высотная зона по {profile.Name} — не более {profile.MaxFloorsLowerZone} этажей. " +
+                $"нижняя высотная зона по профилю «{profile.Name}» — не более {profile.MaxFloorsLowerZone} этажей. " +
                 "Проверьте зонирование системы."));
     }
 
@@ -155,7 +155,7 @@ public sealed class ModelValidator(RequirementsProfile profile)
                 lengthM > profile.MaxApartmentRadiatorLengthM)
                 findings.Add(new Finding(FindingStatus.Error, "CTU-005",
                     $"Радиатор «{radiator.Name}» длиной {lengthM * 1000:0} мм превышает " +
-                    $"{profile.MaxApartmentRadiatorLengthM * 1000:0} мм, допустимые по {profile.Name}.",
+                    $"{profile.MaxApartmentRadiatorLengthM * 1000:0} мм, допустимые по профилю «{profile.Name}».",
                     radiator.Id, radiator.Context.Apartment));
         }
     }
@@ -173,7 +173,7 @@ public sealed class ModelValidator(RequirementsProfile profile)
             if (!hasDpr)
                 findings.Add(new Finding(FindingStatus.Error, "CTU-006",
                     $"Перед коллектором «{manifold.Name}» не найден регулятор перепада давления, " +
-                    $"обязательный по {profile.Name}.", manifold.Id, manifold.Context.Section));
+                    $"обязательный по профилю «{profile.Name}».", manifold.Id, manifold.Context.Section));
         }
     }
 
@@ -185,7 +185,7 @@ public sealed class ModelValidator(RequirementsProfile profile)
             var side = topology.SideOf(meter.Id).Side;
             if (side == NetworkSide.Supply)
                 findings.Add(new Finding(FindingStatus.Error, "CTU-007",
-                    $"Теплосчётчик «{meter.Name}» стоит на подающем трубопроводе; по {profile.Name} " +
+                    $"Теплосчётчик «{meter.Name}» стоит на подающем трубопроводе; по профилю «{profile.Name}» " +
                     "теплосчётчики располагаются на обратном.", meter.Id, meter.Context.SystemName));
         }
     }

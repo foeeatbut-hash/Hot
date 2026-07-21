@@ -164,6 +164,7 @@ public sealed class Classifier
         ["Переход"] = ObjectRole.Reducer,
         ["Компенсатор"] = ObjectRole.Compensator,
         ["Неподвижная опора"] = ObjectRole.FixedSupport,
+        ["Точка трассировки"] = ObjectRole.RoutePoint,
     };
 
     public static bool TryParseRole(string text, out ObjectRole role)
