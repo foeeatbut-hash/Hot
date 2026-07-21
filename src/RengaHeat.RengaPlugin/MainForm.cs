@@ -31,7 +31,7 @@ public sealed class MainForm : Form
 
     // Видимый штамп версии плагина. Увеличивайте при каждом изменении UI — по нему сразу
     // видно в заголовке окна, свежая DLL загружена или старая.
-    private const string Build = "сборка 10";
+    private const string Build = "сборка 11";
 
     private readonly Font _ui = new("Segoe UI", 9f);
     private readonly Font _uiBold = new("Segoe UI", 9f, FontStyle.Bold);
@@ -75,9 +75,9 @@ public sealed class MainForm : Form
         try { Icon = SystemIcons.Application; } catch { /* без иконки — не критично */ }
 
         BuildLayout();
-        TryLoadModel();
         _nav.SelectedIndex = 0;
-        AutoCalculate();   // сразу показываем результат — без ручных действий
+        // Модель НЕ читаем при открытии: на больших проектах это долго. Инженер сам выбирает,
+        // загрузить всё или только выделенное (изолированные уровни), кнопками на панели.
     }
 
     /// <summary>
@@ -99,6 +99,37 @@ public sealed class MainForm : Form
         if (_nav.SelectedItem is string s) ShowSection(s);
     }
 
+    /// <summary>
+    /// Загрузить модель по кнопке: всё или только выделенное в Renga (изолированные уровни).
+    /// Чтение — единственная тяжёлая операция, поэтому запускается явно и с курсором ожидания.
+    /// </summary>
+    private void LoadModel(bool selectedOnly)
+    {
+        _outcome = null;
+        try
+        {
+            Cursor = Cursors.WaitCursor;
+            if (selectedOnly)
+            {
+                if (_ctx.ReadSelectedModel is null) { Msg("Загрузка выделенного доступна только в Renga."); return; }
+                _model = _ctx.ReadSelectedModel();
+                if (_model.Objects.Count == 0)
+                    Msg("В Renga ничего не выделено. Изолируйте нужные уровни, выделите объекты " +
+                        "(например, Ctrl+A выделяет видимые) и повторите загрузку.", MessageBoxIcon.Warning);
+            }
+            else
+            {
+                _model = _ctx.ReadModel();
+            }
+        }
+        catch (Exception ex) { _model = null; Msg("Не удалось прочитать модель: " + ex.Message, MessageBoxIcon.Error); }
+        finally { Cursor = Cursors.Default; }
+
+        UpdateStatus();
+        AutoCalculate();
+        if (_nav.SelectedItem is string s) ShowSection(s);
+    }
+
     /// <summary>Рабочая модель: исходная, отфильтрованная по выбранным уровням (раздел «Уровни»).</summary>
     private HeatingModel? WorkingModel() =>
         _model?.FilterByLevels(new HashSet<string>(_config.SelectedLevels));
@@ -116,13 +147,16 @@ public sealed class MainForm : Form
         // как ряд «+ / копия / карандаш / крестик» в диалогах Renga.
         var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = NavBg, Padding = new Padding(4, 4, 0, 0), WrapContents = false };
         toolbar.Paint += (_, e) => e.Graphics.DrawLine(new Pen(BorderColor), 0, toolbar.Height - 1, toolbar.Width, toolbar.Height - 1);
-        var runBtn = IconToolButton("", "Рассчитать");     // Play
+        var loadSelBtn = IconToolButton("", "Загрузить выделенное в Renga (изолированные уровни)");   // Filter
+        loadSelBtn.Click += (_, _) => LoadModel(selectedOnly: true);
+        var loadAllBtn = IconToolButton("", "Загрузить всю модель (может быть долго)");              // Download
+        loadAllBtn.Click += (_, _) => LoadModel(selectedOnly: false);
+        var runBtn = IconToolButton("", "Рассчитать");                                                // Play
         runBtn.Click += (_, _) => RunCalculation();
-        var reloadBtn = IconToolButton("", "Обновить модель");  // Refresh
-        reloadBtn.Click += (_, _) => ReloadModel();
-        toolbar.Controls.Add(runBtn);
+        toolbar.Controls.Add(loadSelBtn);
+        toolbar.Controls.Add(loadAllBtn);
         toolbar.Controls.Add(Separator());
-        toolbar.Controls.Add(reloadBtn);
+        toolbar.Controls.Add(runBtn);
         root.Controls.Add(toolbar, 0, 0);
         root.SetColumnSpan(toolbar, 2);
 
@@ -203,21 +237,6 @@ public sealed class MainForm : Form
         Width = 1, Height = 20, Margin = new Padding(4, 5, 4, 5), BackColor = BorderColor,
     };
 
-    /// <summary>Перечитать модель из Renga (окно немодальное — модель могла измениться) и пересчитать.</summary>
-    public void ReloadModel()
-    {
-        _outcome = null;
-        TryLoadModel();
-        AutoCalculate();
-    }
-
-    private void TryLoadModel()
-    {
-        try { _model = _ctx.ReadModel(); }
-        catch (Exception ex) { _model = null; _status.Text = "Не удалось прочитать модель: " + ex.Message; return; }
-        UpdateStatus();
-    }
-
     private void UpdateStatus()
     {
         var p = EffectiveProfile();
@@ -275,7 +294,13 @@ public sealed class MainForm : Form
 
         if (_model is null)
         {
-            panel.Controls.Add(Info("Модель не загружена. Откройте проект Renga и нажмите «Обновить модель» на панели сверху."));
+            panel.Controls.Add(Card("Модель не загружена",
+                "Плагин не читает модель автоматически — на больших проектах это долго.\r\n\r\n" +
+                "Для расчёта только нужной части (рекомендуется):\r\n" +
+                "   1) в Renga изолируйте нужные уровни;\r\n" +
+                "   2) выделите объекты (Ctrl+A выделяет видимые);\r\n" +
+                "   3) нажмите на панели сверху «Загрузить выделенное» (значок фильтра).\r\n\r\n" +
+                "Либо «Загрузить всю модель» (значок загрузки) — читается весь проект, может быть долго."));
             return panel;
         }
 

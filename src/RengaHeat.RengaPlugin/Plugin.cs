@@ -99,9 +99,10 @@ public sealed class Plugin : Renga.IPlugin
             }
 
             // Одно окно на сессию: повторное нажатие кнопки — просто активирует существующее.
+            // Модель НЕ перечитываем автоматически (крупные проекты читаются долго): загрузку
+            // запускает сам инженер кнопкой в окне.
             if (_window is { IsDisposed: false })
             {
-                _window.ReloadModel();
                 _window.WindowState = System.Windows.Forms.FormWindowState.Normal;
                 _window.Activate();
                 return;
@@ -114,6 +115,7 @@ public sealed class Plugin : Renga.IPlugin
             {
                 Profile = RequirementsProfile.Novosaratovka(),
                 ReadModel = gateway.ReadModel,
+                ReadSelectedModel = gateway.ReadSelected,    // читать только выделенное (изолированные уровни)
                 ApplyChanges = null,        // режим только анализа: запись отключена
                 SelectInRenga = gateway.SelectByUniqueId,   // двойной клик в таблице — выделить объект в Renga
                 SelectManyInRenga = gateway.SelectManyByUniqueId,   // подсветка группы объектов по роли/стороне

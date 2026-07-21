@@ -14,8 +14,11 @@ public sealed class PluginContext
     public RequirementsProfile Profile { get; set; } = RequirementsProfile.Novosaratovka();
     public CalculationScenario Scenario { get; set; } = CalculationScenario.Base;
 
-    /// <summary>Прочитать модель из источника (Renga или демо).</summary>
+    /// <summary>Прочитать модель из источника (Renga или демо) — вся инженерная модель.</summary>
     public required Func<HeatingModel> ReadModel { get; init; }
+
+    /// <summary>Прочитать только выделенные в Renga объекты (сценарий изоляции уровней; необязательно).</summary>
+    public Func<HeatingModel>? ReadSelectedModel { get; init; }
 
     /// <summary>Выделить/показать объект в Renga по его идентификатору (необязательно).</summary>
     public Action<string>? SelectInRenga { get; init; }

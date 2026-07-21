@@ -29,6 +29,10 @@ public sealed class RengaModelGateway : IModelGateway
 {
     private readonly Renga.IApplication _application;
 
+    // Кэш рефлексии свойства уровня: находим один раз, а не на каждый из десятков тысяч объектов.
+    private static System.Reflection.PropertyInfo? _levelIdProp;
+    private static bool _levelIdProbed;
+
     public RengaModelGateway(Renga.IApplication application) => _application = application;
 
     /// <summary>
@@ -66,7 +70,37 @@ public sealed class RengaModelGateway : IModelGateway
         CanWriteProperties: false, CanChangePipeStyle: false, CanWriteValvePreset: false,
         CanCreateMarks: false, CanFixDirection: false, SupportsUndo: false);
 
-    public HeatingModel ReadModel()
+    /// <summary>Прочитать всю инженерную модель проекта.</summary>
+    public HeatingModel ReadModel() => ReadModelCore(null);
+
+    /// <summary>
+    /// Прочитать только объекты, выделенные в Renga (сценарий изоляции уровней: изолируем уровни →
+    /// выделяем объекты (Ctrl+A выделяет видимые) → грузим). Читаются лишь актуальные объекты —
+    /// это на порядок быстрее полного чтения крупной модели.
+    /// </summary>
+    public HeatingModel ReadSelected()
+    {
+        var ids = GetSelectedObjectIds();
+        return ReadModelCore(ids);   // пустой набор → пустая модель (ничего не выделено)
+    }
+
+    /// <summary>Текущее выделение в Renga: числовые Id объектов (пусто, если ничего не выделено).</summary>
+    public IReadOnlySet<int> GetSelectedObjectIds()
+    {
+        try
+        {
+            var sel = _application.Selection?.GetSelectedObjects();
+            return sel is null ? new HashSet<int>() : new HashSet<int>(sel);
+        }
+        catch { return new HashSet<int>(); }
+    }
+
+    /// <summary>
+    /// Единый проход чтения. При onlyIds != null дорогое чтение (свойства/параметры/порты) делается
+    /// только для объектов из набора. Связи восстанавливаются по карте «Id Renga → UniqueId» без
+    /// вызовов GetById (иначе на десятках тысяч объектов получается O(N²) и минуты ожидания).
+    /// </summary>
+    private HeatingModel ReadModelCore(IReadOnlySet<int>? onlyIds)
     {
         var project = _application.Project
             ?? throw new InvalidOperationException("В Renga не открыт проект.");
@@ -77,74 +111,83 @@ public sealed class RengaModelGateway : IModelGateway
                 : Path.GetFileNameWithoutExtension(project.FilePath),
         };
 
-        var rengaModel = project.Model;
-        var objects = rengaModel.GetObjects();
-
-        // Пред-скан уровней (этажей): объект-уровень определяем по интерфейсу ILevel (без завязки
-        // на конкретный тип), имя берём из объекта. Карта: Id уровня → имя — для фильтра по уровням.
-        var levelNames = new Dictionary<int, string>();
-        for (var i = 0; i < objects.Count; i++)
-        {
-            try
-            {
-                var mo = objects.GetByIndex(i);
-                if (mo is not null && mo.GetInterfaceByName("ILevel") != null)
-                    levelNames[mo.Id] = string.IsNullOrWhiteSpace(mo.Name) ? $"Уровень {mo.Id}" : mo.Name;
-            }
-            catch { /* объект-уровень нечитаем — пропускаем */ }
-        }
-
-        // Диагностика: распределение типов (всего/распознано инженерными/пример) — пишется в лог,
-        // чтобы при пустом результате сразу видеть реальные GUID-типы модели.
+        var objects = project.Model.GetObjects();
         var tally = new Dictionary<Guid, (int Total, int Kept, string Sample)>();
-        for (var i = 0; i < objects.Count; i++)
+        var levelNames = new Dictionary<int, string>();
+        var idToUid = new Dictionary<int, string>();   // Renga Id → UniqueId, для связей без GetById
+        var routes = new List<(int Src, int Tgt, int SrcPort, int TgtPort)>();
+
+        var count = objects.Count;
+        for (var i = 0; i < count; i++)
         {
-            // Один «плохой» объект модели не должен ронять весь расчёт — читаем защищённо.
             try
             {
                 var mo = objects.GetByIndex(i);
                 if (mo is null) continue;
-                var eng = IsEngineering(mo);
 
+                // Имена уровней собираем всегда (объект-уровень определяем по интерфейсу ILevel).
+                try
+                {
+                    if (mo.GetInterfaceByName("ILevel") != null)
+                        levelNames[mo.Id] = string.IsNullOrWhiteSpace(mo.Name) ? $"Уровень {mo.Id}" : mo.Name;
+                }
+                catch { /* не уровень */ }
+
+                // Фильтр выделения: пропускаем ненужные объекты ДО дорогого чтения свойств.
+                if (onlyIds is not null && !onlyIds.Contains(mo.Id)) continue;
+
+                var eng = IsEngineering(mo);
                 Guid type; try { type = mo.ObjectType; } catch { type = Guid.Empty; }
                 tally.TryGetValue(type, out var t);
                 tally[type] = (t.Total + 1, t.Kept + (eng ? 1 : 0),
-                    string.IsNullOrEmpty(t.Sample) ? (SafeName(mo)) : t.Sample);
+                    string.IsNullOrEmpty(t.Sample) ? SafeName(mo) : t.Sample);
+                if (!eng) continue;
 
-                if (!eng) continue;   // только инженерные объекты
-                var obj = new NetworkObject
-                {
-                    Id = mo.UniqueIdS,
-                    Name = mo.Name ?? string.Empty,
-                    RengaTypeId = mo.ObjectTypeS,
-                };
-                // Уровень (этаж) объекта — для фильтра по уровням. Читаем LevelId через рефлексию:
-                // так код собирается независимо от точного имени/наличия свойства в этой сборке Renga,
-                // а при отсутствии — объект просто считается «без уровня».
-                try
-                {
-                    if (mo.GetType().GetProperty("LevelId")?.GetValue(mo) is int lid)
-                    {
-                        obj.LevelId = lid;
-                        obj.LevelName = levelNames.TryGetValue(lid, out var ln) ? ln : null;
-                    }
-                }
-                catch { /* уровень недоступен — объект считается «без уровня» */ }
+                var uid = mo.UniqueIdS;
+                idToUid[mo.Id] = uid;
+                var obj = new NetworkObject { Id = uid, Name = mo.Name ?? string.Empty, RengaTypeId = mo.ObjectTypeS };
+
+                // Уровень объекта (LevelId через кэшированную рефлексию — имя резолвим после прохода).
+                if (!_levelIdProbed) { _levelIdProbed = true; try { _levelIdProp = mo.GetType().GetProperty("LevelId"); } catch { } }
+                if (_levelIdProp is not null)
+                    try { if (_levelIdProp.GetValue(mo) is int lid) obj.LevelId = lid; } catch { }
+
                 ReadProperties(mo, obj);
                 ReadParameters(mo, obj);
                 ReadQuantities(mo, obj);
                 ReadPorts(mo, obj);
-                if (!model.Objects.ContainsKey(obj.Id))
-                    model.Add(obj);
+
+                // Сташим концы трассы (числовые Id) — резолвим в UniqueId после прохода, без GetById.
+                try
+                {
+                    if (mo.GetInterfaceByName("IRouteParams") is Renga.IRouteParams route)
+                        routes.Add((route.SourceModelObjectId, route.TargetModelObjectId,
+                                    route.SourcePortIndex, route.TargetPortIndex));
+                }
+                catch { /* нет трассы */ }
+
+                if (!model.Objects.ContainsKey(uid)) model.Add(obj);
             }
-            catch
-            {
-                // пропускаем нечитаемый объект; связи по нему просто не построятся
-            }
+            catch { /* нечитаемый объект пропускаем */ }
+        }
+
+        // Имена уровней (уровень мог встретиться в коллекции позже своих объектов).
+        foreach (var obj in model.Objects.Values)
+            if (obj.LevelId is { } lid && levelNames.TryGetValue(lid, out var ln))
+                obj.LevelName = ln;
+
+        // Связи по сташированным трассам через карту Id→UniqueId (O(1) на связь).
+        foreach (var (src, tgt, sp, tp) in routes)
+        {
+            if (!idToUid.TryGetValue(src, out var srcUid) || !idToUid.TryGetValue(tgt, out var tgtUid)) continue;
+            if (!model.Objects.TryGetValue(srcUid, out var na) || !model.Objects.TryGetValue(tgtUid, out var nb)) continue;
+            var sPort = sp.ToString(CultureInfo.InvariantCulture);
+            var tPort = tp.ToString(CultureInfo.InvariantCulture);
+            if (na.Ports.Any(p => p.Id == sPort) && nb.Ports.Any(p => p.Id == tPort))
+                model.Connect(na, sPort, nb, tPort);
         }
 
         DumpTypeDiagnostics(tally, model.Objects.Count);
-        ReadConnections(rengaModel, objects, model);
         return model;
     }
 
@@ -252,39 +295,6 @@ public sealed class RengaModelGateway : IModelGateway
                 Id: i.ToString(CultureInfo.InvariantCulture),
                 Dn: pipeParams is null ? null : (int)Math.Round(pipeParams.NominalDiameter),
                 ConnectionType: pipeParams?.ConnectionType.ToString()));
-        }
-    }
-
-    private static void ReadConnections(Renga.IModel rengaModel, Renga.IModelObjectCollection objects,
-        HeatingModel model)
-    {
-        // Связность инженерной сети восстанавливается по параметрам трасс (IRouteParams):
-        // источник/приёмник соединения и индексы портов. Стрелка трассы здесь не трактуется как
-        // физическое направление — им занимается топология/решатель ядра.
-        var allObjects = rengaModel.GetObjects();
-        for (var i = 0; i < objects.Count; i++)
-        {
-            try
-            {
-                var mo = objects.GetByIndex(i);
-                if (mo?.GetInterfaceByName("IRouteParams") is not Renga.IRouteParams route)
-                    continue;
-                // Конец трассы может ссылаться на отсутствующий/несозданный объект — GetById вернёт null.
-                var a = allObjects.GetById(route.SourceModelObjectId);
-                var b = allObjects.GetById(route.TargetModelObjectId);
-                if (a is null || b is null) continue;
-                if (!model.Objects.TryGetValue(a.UniqueIdS, out var na) ||
-                    !model.Objects.TryGetValue(b.UniqueIdS, out var nb))
-                    continue;
-                var sourcePort = route.SourcePortIndex.ToString(CultureInfo.InvariantCulture);
-                var targetPort = route.TargetPortIndex.ToString(CultureInfo.InvariantCulture);
-                if (na.Ports.Any(p => p.Id == sourcePort) && nb.Ports.Any(p => p.Id == targetPort))
-                    model.Connect(na, sourcePort, nb, targetPort);
-            }
-            catch
-            {
-                // одна нечитаемая связь не должна ронять построение сети
-            }
         }
     }
 
