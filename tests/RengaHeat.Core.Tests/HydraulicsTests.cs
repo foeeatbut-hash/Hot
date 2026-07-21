@@ -110,4 +110,28 @@ public class HydraulicsTests
         var p = Friction.Hydrostatic(977, 10);
         Assert.InRange(p, 95000, 96000); // ~ρgh
     }
+
+    [Fact]
+    public void Solver_AutoGroundsIsolatedComponents_InsteadOfThrowing()
+    {
+        // Два гидравлически несвязанных островка; опорный узел есть только в первом.
+        // Реальные модели приходят с разрывами — решатель обязан выдать результат и счётчик,
+        // а не «Система вырождена».
+        var resistive = new[]
+        {
+            new ResistiveBranch("a", "n1", "n2", 1000),
+            new ResistiveBranch("b", "m1", "m2", 1000),
+        };
+        var fixedFlows = new[]
+        {
+            new FixedFlowBranch("dev1", "n2", "n1", 0.05),
+            new FixedFlowBranch("dev2", "m2", "m1", 0.05),
+        };
+
+        var result = new HydraulicSolver().Solve(resistive, fixedFlows, new[] { "n1" });
+
+        Assert.Equal(1, result.AutoGroundedComponents);
+        Assert.True(result.Converged);
+        Assert.Equal(0.05, Math.Abs(result.BranchFlows["b"]), 3);   // островок тоже посчитан
+    }
 }

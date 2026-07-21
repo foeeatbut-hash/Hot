@@ -16,7 +16,8 @@ public sealed record SolverResult(
     IReadOnlyDictionary<string, double> NodePressures,
     IReadOnlyDictionary<string, double> BranchFlows,
     int Iterations,
-    bool Converged)
+    bool Converged,
+    int AutoGroundedComponents = 0)   // островков схемы, заземлённых автоматически (данные с разрывами)
 {
     /// <summary>Перепад давления на ветви с фиксированным расходом (располагаемый напор на ней).</summary>
     public double PressureDropAcross(FixedFlowBranch branch) =>
@@ -65,6 +66,38 @@ public sealed class HydraulicSolver
         var index = nodes.Select((n, i) => (n, i)).ToDictionary(t => t.n, t => t.i);
         var n = nodes.Count;
 
+        // Реальные схемы приходят с разрывами: часть узлов образует резистивные «островки» без
+        // опорного узла, а узлы только с фиксированными ветвями вовсе не имеют проводимостей.
+        // Такие компоненты заземляются автоматически (свой нуль давления в каждом островке) —
+        // система остаётся решаемой, а факт разрывов сообщается наверх счётчиком, не исключением.
+        var effectiveReferences = new HashSet<string>(referenceNodes);
+        var autoGrounded = 0;
+        {
+            var adjacency = new Dictionary<string, List<string>>();
+            foreach (var node in nodes) adjacency[node] = new List<string>();
+            foreach (var br in resistive)
+            {
+                adjacency[br.FromNode].Add(br.ToNode);
+                adjacency[br.ToNode].Add(br.FromNode);
+            }
+            var visited = new HashSet<string>();
+            foreach (var start in nodes)
+            {
+                if (!visited.Add(start)) continue;
+                var component = new List<string> { start };
+                var queue = new Queue<string>();
+                queue.Enqueue(start);
+                while (queue.Count > 0)
+                    foreach (var next in adjacency[queue.Dequeue()])
+                        if (visited.Add(next)) { component.Add(next); queue.Enqueue(next); }
+                if (!component.Any(effectiveReferences.Contains))
+                {
+                    effectiveReferences.Add(component[0]);
+                    autoGrounded++;
+                }
+            }
+        }
+
         // Инжекции от ветвей с фиксированным расходом: из FromNode уходит, в ToNode приходит
         var injection = new double[n];
         foreach (var f in fixedFlows)
@@ -96,8 +129,8 @@ public sealed class HydraulicSolver
                 a[j, i] -= conductance;
             }
 
-            // Опорные узлы: p = 0
-            foreach (var reference in referenceNodes)
+            // Опорные узлы: p = 0 (включая автозаземлённые островки)
+            foreach (var reference in effectiveReferences)
             {
                 var r = index[reference];
                 for (var k = 0; k < n; k++) { a[r, k] = 0; }
@@ -126,7 +159,7 @@ public sealed class HydraulicSolver
         foreach (var f in fixedFlows)
             branchFlows[f.Id] = f.Flow;
 
-        return new SolverResult(nodePressures, branchFlows, iteration, converged);
+        return new SolverResult(nodePressures, branchFlows, iteration, converged, autoGrounded);
     }
 
     /// <summary>Гауссово исключение с выбором главного элемента по столбцу.</summary>

@@ -160,7 +160,25 @@ public sealed class CalculationEngine(RequirementsProfile profile, CalculationSc
                 "в «Исходных»), либо назначьте другой источник в «Карте».", source.Id));
             return Failed(source, findings.ToArray());
         }
-        var solve = new HydraulicSolver().Solve(resistiveBranches, fixedFlows, references);
+        SolverResult solve;
+        try
+        {
+            solve = new HydraulicSolver().Solve(resistiveBranches, fixedFlows, references);
+        }
+        catch (Exception ex)
+        {
+            // Любой сбой решателя на одном фрагменте — замечание по фрагменту, а не отказ всего расчёта.
+            findings.Add(new Finding(FindingStatus.Error, "CALC-004",
+                $"Гидравлическая схема источника «{source.Name}» не решается: {ex.Message} " +
+                "Обычно причина — разрывы сети: соедините трассы или проверьте автосоединения в «Карте».",
+                source.Id));
+            return Failed(source, findings.ToArray());
+        }
+        if (solve.AutoGroundedComponents > 0)
+            findings.Add(new Finding(FindingStatus.Warning, "HYD-004",
+                $"Схема источника «{source.Name}» распадается на {solve.AutoGroundedComponents + 1} " +
+                "гидравлически несвязанных частей (давления в островках условны). Соедините сеть: " +
+                "группа «Открытые концы сети» в «Карте» показывает места разрывов.", source.Id));
         if (!solve.Converged)
             findings.Add(new Finding(FindingStatus.Warning, "CALC-002",
                 $"Гидравлический решатель не сошёлся за {solve.Iterations} итераций у источника «{source.Name}». " +
