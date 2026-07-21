@@ -6,15 +6,23 @@ namespace RengaHeat.Core.Model;
 /// </summary>
 public sealed record PropertyValue(Guid StableId, string Name, object? Value, string? UnitSymbol = null);
 
-/// <summary>Тип соединения порта (данные порта Renga: DN, тип, число подключений).</summary>
+/// <summary>
+/// Тип соединения порта (данные порта Renga: DN, тип, число подключений).
+/// Координаты (мм, глобальные) заполняются адаптером, если API их отдаёт; по ним работает
+/// автосоединение близких свободных точек трассировки (ProximityStitcher).
+/// </summary>
 public sealed record Port(
     string Id,
     int? Dn = null,
     string? ConnectionType = null,
     string? CounterpartObjectId = null,
-    string? CounterpartPortId = null)
+    string? CounterpartPortId = null,
+    double? Xmm = null,
+    double? Ymm = null,
+    double? Zmm = null)
 {
     public bool IsConnected => CounterpartObjectId is not null;
+    public bool HasLocation => Xmm is not null && Ymm is not null && Zmm is not null;
 }
 
 /// <summary>Геометрический и организационный контекст объекта в здании.</summary>
@@ -81,8 +89,13 @@ public sealed class NetworkObject
     public override string ToString() => $"{Name} [{Role.Role}] ({Id})";
 }
 
-/// <summary>Физическое соединение двух портов (ребро ненаправленного графа связности).</summary>
-public sealed record Connection(string ObjectAId, string PortAId, string ObjectBId, string PortBId);
+/// <summary>
+/// Физическое соединение двух портов (ребро ненаправленного графа связности).
+/// ModeledAtoB — в модели Renga трасса ориентирована A→B (ориентация/стрелка автора модели).
+/// Это лишь подсказка для аудита направлений: расчёт направлений ей не доверяет.
+/// </summary>
+public sealed record Connection(string ObjectAId, string PortAId, string ObjectBId, string PortBId,
+    bool ModeledAtoB = false);
 
 /// <summary>Расчётная модель: снимок сети отопления, считанный из Renga через адаптер.</summary>
 public sealed class HeatingModel
@@ -130,8 +143,9 @@ public sealed class HeatingModel
         return m;
     }
 
-    /// <summary>Соединить два объекта по указанным портам, обновив данные портов с обеих сторон.</summary>
-    public void Connect(NetworkObject a, string portA, NetworkObject b, string portB)
+    /// <summary>Соединить два объекта по указанным портам, обновив данные портов с обеих сторон.
+    /// modeledAtoB — соединение пришло из трассы Renga, ориентированной A→B (для аудита направлений).</summary>
+    public void Connect(NetworkObject a, string portA, NetworkObject b, string portB, bool modeledAtoB = false)
     {
         var pa = a.Ports.FindIndex(p => p.Id == portA);
         var pb = b.Ports.FindIndex(p => p.Id == portB);
@@ -139,6 +153,6 @@ public sealed class HeatingModel
             throw new ArgumentException($"Порт не найден: {a.Id}:{portA} или {b.Id}:{portB}");
         a.Ports[pa] = a.Ports[pa] with { CounterpartObjectId = b.Id, CounterpartPortId = portB };
         b.Ports[pb] = b.Ports[pb] with { CounterpartObjectId = a.Id, CounterpartPortId = portA };
-        Connections.Add(new Connection(a.Id, portA, b.Id, portB));
+        Connections.Add(new Connection(a.Id, portA, b.Id, portB, modeledAtoB));
     }
 }

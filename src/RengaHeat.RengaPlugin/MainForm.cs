@@ -31,7 +31,7 @@ public sealed class MainForm : Form
 
     // Видимый штамп версии плагина. Увеличивайте при каждом изменении UI — по нему сразу
     // видно в заголовке окна, свежая DLL загружена или старая.
-    private const string Build = "сборка 11";
+    private const string Build = "сборка 12";
 
     private readonly Font _ui = new("Segoe UI", 9f);
     private readonly Font _uiBold = new("Segoe UI", 9f, FontStyle.Bold);
@@ -56,8 +56,9 @@ public sealed class MainForm : Form
 
     private static readonly string[] Sections =
     {
-        "Обзор", "Исходные", "Уровни", "Классификатор", "Сопоставление",
-        "Проверка модели", "Расчёт", "Балансировка", "Подсветка", "Предпросмотр изменений", "Отчёты и экспорт",
+        "Обзор", "Исходные", "Уровни", "Карта", "Классификатор", "Сопоставление",
+        "Проверка модели", "Расчёт", "Балансировка", "Предпросмотр изменений",
+        "Отчёты и экспорт", "О программе",
     };
 
     public MainForm(PluginContext ctx)
@@ -91,7 +92,7 @@ public sealed class MainForm : Form
         try
         {
             Cursor = Cursors.WaitCursor;
-            _outcome = BuildSession().Run(work);
+            _outcome = RunSessionOn(work);
             UpdateStatus();
         }
         catch { /* авто-расчёт не критичен: инженер запустит вручную кнопкой «Рассчитать» */ }
@@ -257,14 +258,15 @@ public sealed class MainForm : Form
             "Обзор" => BuildOverview(),
             "Исходные" => BuildInputs(),
             "Уровни" => BuildLevels(),
+            "Карта" => BuildMap(),
             "Классификатор" => BuildClassifier(),
             "Сопоставление" => BuildMapping(),
             "Проверка модели" => BuildValidation(),
             "Расчёт" => BuildCalculation(),
             "Балансировка" => BuildBalancing(),
-            "Подсветка" => BuildHighlight(),
             "Предпросмотр изменений" => BuildPreview(),
             "Отчёты и экспорт" => BuildReports(),
+            "О программе" => BuildAbout(),
             _ => Info("Раздел в разработке."),
         };
         body.Dock = DockStyle.Fill;
@@ -346,13 +348,46 @@ public sealed class MainForm : Form
         {
             Cursor = Cursors.WaitCursor;
             _config.Save();
-            _outcome = BuildSession().Run(work);
+            _outcome = RunSessionOn(work);
             UpdateStatus();
             _nav.SelectedItem = "Расчёт";
             ShowSection("Расчёт");
         }
         catch (Exception ex) { Msg("Ошибка расчёта: " + ex.Message, MessageBoxIcon.Error); }
         finally { Cursor = Cursors.Default; }
+    }
+
+    /// <summary>Пересчитать без смены раздела (после переназначений в «Карте»).</summary>
+    private void RecalculateInPlace()
+    {
+        var work = WorkingModel();
+        if (work is null) return;
+        try
+        {
+            Cursor = Cursors.WaitCursor;
+            _config.Save();
+            _outcome = RunSessionOn(work);
+            UpdateStatus();
+        }
+        catch (Exception ex) { Msg("Ошибка расчёта: " + ex.Message, MessageBoxIcon.Error); }
+        finally { Cursor = Cursors.Default; }
+        if (_nav.SelectedItem is string s) ShowSection(s);
+    }
+
+    /// <summary>Прогон сессии с учётом ручных назначений ролей из «Карты» (приоритет над авто).</summary>
+    private SessionOutcome RunSessionOn(HeatingModel work)
+    {
+        ApplyManualRoles(work);
+        return BuildSession().Run(work);
+    }
+
+    /// <summary>Ручные роли по UniqueId переживают перезагрузку модели — накладываем перед расчётом.</summary>
+    private void ApplyManualRoles(HeatingModel m)
+    {
+        foreach (var (uid, roleName) in _config.ObjectRoles)
+            if (m.Objects.TryGetValue(uid, out var o) &&
+                Enum.TryParse<ObjectRole>(roleName, out var role) && role != ObjectRole.Unknown)
+                o.Role = new RoleAssignment(role, RoleSource.Manual);
     }
 
     /// <summary>Собрать сессию из профиля и пользовательских настроек (роли по типам, свойство нагрузки).</summary>
@@ -368,6 +403,12 @@ public sealed class MainForm : Form
         var mappings = SessionFactory.MappingsFor(_config.FieldProperties, DefaultLoadNames);
         var profile = EffectiveProfile();
 
+        // Ручные назначения сторон (подача/обратка/источник) из «Карты» — абсолютный приоритет.
+        var direction = new DirectionInference();
+        foreach (var (uid, sideName) in _config.ObjectSides)
+            if (Enum.TryParse<NetworkSide>(sideName, out var side) && side != NetworkSide.Unknown)
+                direction.ManualSides[uid] = side;
+
         return new CalculationSession
         {
             Profile = profile,
@@ -375,6 +416,7 @@ public sealed class MainForm : Form
             Classifier = classifier,
             Rules = SessionFactory.RuleEngineFor(profile),
             Scenario = EffectiveScenario(),
+            Direction = direction,
         };
     }
 
@@ -440,6 +482,7 @@ public sealed class MainForm : Form
         Dbl("Лимит скорости — квартиры", "м/с", p => p.MaxVelocityApartmentMS, (o, v) => o.MaxVelocityApartmentMS = v),
         Dbl("Лимит скорости — магистрали", "м/с", p => p.MaxVelocityMainMS, (o, v) => o.MaxVelocityMainMS = v),
         Dbl("Лимит удельных потерь", "Па/м", p => p.MaxSpecificLossPaM, (o, v) => o.MaxSpecificLossPaM = v),
+        Dbl("Автосоединение точек (0 — выкл.)", "мм", p => p.AutoStitchToleranceMm, (o, v) => o.AutoStitchToleranceMm = v),
     };
 
     private Control BuildInputs()
@@ -564,18 +607,114 @@ public sealed class MainForm : Form
         return VStack(caption, 30, Framed(list, new Padding(0)), apply, 48);
     }
 
-    private Control BuildHighlight()
+    /// <summary>Пункт списка назначений «Карты»: подпись → роль или сторона (null/null — снять).</summary>
+    private sealed record MapAssignOption(string Label, ObjectRole? Role, NetworkSide? Side)
     {
-        if (_ctx.SelectManyInRenga is null) return Info("Подсветка доступна только внутри Renga.");
-        if (_outcome is null) return Info("Сначала выполните расчёт — затем можно подсветить объекты в модели.");
+        public override string ToString() => Label;
+    }
+
+    private static readonly MapAssignOption[] MapAssignOptions =
+    {
+        new("Источник (ИТП)", ObjectRole.HeatSource, null),
+        new("Радиатор", ObjectRole.Radiator, null),
+        new("Конвектор", ObjectRole.Convector, null),
+        new("Полотенцесушитель", ObjectRole.TowelRail, null),
+        new("Подающий коллектор", ObjectRole.SupplyManifold, null),
+        new("Обратный коллектор", ObjectRole.ReturnManifold, null),
+        new("Стояк", ObjectRole.Riser, null),
+        new("Подающая магистраль", ObjectRole.SupplyMain, null),
+        new("Обратная магистраль", ObjectRole.ReturnMain, null),
+        new("Труба", ObjectRole.Pipe, null),
+        new("Насос", ObjectRole.Pump, null),
+        new("Балансировочный клапан", ObjectRole.BalancingValve, null),
+        new("Термостатический клапан", ObjectRole.ThermostaticValve, null),
+        new("Запорная арматура", ObjectRole.ShutoffValve, null),
+        new("Сторона: подача", null, NetworkSide.Supply),
+        new("Сторона: обратка", null, NetworkSide.Return),
+        new("— снять назначение —", null, null),
+    };
+
+    /// <summary>
+    /// «Карта»: метки — подсветка групп выделением прямо в модели Renga; проверка и переназначение
+    /// ролей/сторон по выделению; несовпадения направлений и автосоединения точек трассировки.
+    /// </summary>
+    private Control BuildMap()
+    {
+        if (_ctx.SelectManyInRenga is null) return Info("Карта работает только внутри Renga.");
+        if (_model is null)
+            return Info("Сначала загрузите модель: значок фильтра (выделенное) или загрузки (вся модель) на панели.");
         var work = WorkingModel();
         if (work is null) return Info("Модель не загружена.");
+
+        var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
+        panel.Controls.Add(Info(
+            "Метки карты — подсветка выделением в модели Renga: нажмите группу, объекты подсветятся.\r\n" +
+            "Если что-то определено неверно: выделите объекты в Renga → выберите, что это → «Назначить». " +
+            "Назначение имеет приоритет над автоопределением и сохраняется между запусками."));
+
+        // --- Переназначение по выделению Renga ---
+        var assignRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 2, 0, 10) };
+        var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 240, Font = _ui, Margin = new Padding(0, 2, 8, 0) };
+        combo.Items.AddRange(MapAssignOptions.Cast<object>().ToArray());
+        combo.SelectedIndex = 0;
+        var assignBtn = PrimaryButton("Назначить выделенным в Renga");
+        assignBtn.Width = 240;
+        assignBtn.Click += (_, _) =>
+        {
+            if (_ctx.GetSelectedUniqueIds is null) { Msg("Чтение выделения доступно только в Renga."); return; }
+            if (combo.SelectedItem is not MapAssignOption opt) return;
+            var uids = _ctx.GetSelectedUniqueIds();
+            if (uids.Count == 0)
+            {
+                Msg("В Renga ничего не выделено. Выделите объекты в модели и повторите.", MessageBoxIcon.Warning);
+                return;
+            }
+            foreach (var uid in uids)
+            {
+                if (opt.Role is { } role) { _config.ObjectRoles[uid] = role.ToString(); }
+                else if (opt.Side is { } side) { _config.ObjectSides[uid] = side.ToString(); }
+                else { _config.ObjectRoles.Remove(uid); _config.ObjectSides.Remove(uid); }
+            }
+            _config.Save();
+            RecalculateInPlace();   // назначения сразу учитываются в топологии и расчёте
+        };
+        assignRow.Controls.Add(combo);
+        assignRow.Controls.Add(assignBtn);
+        var assigned = _config.ObjectRoles.Count + _config.ObjectSides.Count;
+        if (assigned > 0)
+        {
+            var clearBtn = SecondaryButton($"Сбросить назначения ({assigned})");
+            clearBtn.Click += (_, _) =>
+            {
+                _config.ObjectRoles.Clear();
+                _config.ObjectSides.Clear();
+                _config.Save();
+                RecalculateInPlace();
+            };
+            assignRow.Controls.Add(clearBtn);
+        }
+        panel.Controls.Add(assignRow);
+
+        if (_outcome is null)
+        {
+            panel.Controls.Add(Info("Группы карты появятся после расчёта — нажмите ▶ на панели."));
+            return panel;
+        }
 
         var topo = _outcome.Topology;
         List<string> BySide(NetworkSide side) =>
             topo.Sides.Where(kv => kv.Value.Side == side).Select(kv => kv.Key).ToList();
         List<string> ByRoles(params ObjectRole[] roles) =>
             work.Objects.Values.Where(o => roles.Contains(o.Role.Role)).Select(o => o.Id).ToList();
+
+        var dirIds = _outcome.DirectionAudit.Issues
+            .SelectMany(i => new[] { i.ObjectAId, i.ObjectBId }).Distinct().ToList();
+        var stitchIds = _outcome.Stitched
+            .SelectMany(s => new[] { s.ObjectAId, s.ObjectBId }).Distinct().ToList();
+        var conflictIds = topo.Sides
+            .Where(kv => kv.Value.Confidence == DirectionConfidence.Conflict).Select(kv => kv.Key).ToList();
+        var manualIds = _config.ObjectRoles.Keys.Concat(_config.ObjectSides.Keys)
+            .Where(work.Objects.ContainsKey).Distinct().ToList();
 
         var groups = new (string Name, List<string> Ids)[]
         {
@@ -590,10 +729,13 @@ public sealed class MainForm : Form
             ("Присоединения к ИТП", topo.ItpConnections.Select(o => o.Id).ToList()),
             ("Критическое кольцо", _outcome.Results.Select(r => r.CriticalRingDeviceId)
                 .Where(id => id is not null).Cast<string>().Distinct().ToList()),
+            ("⚠ Направление против потока", dirIds),
+            ("Автосоединённые разрывы", stitchIds),
+            ("Открытые концы сети", topo.OpenEnds.Select(o => o.Id).ToList()),
+            ("⚠ Конфликты сторон", conflictIds),
+            ("Назначено вручную", manualIds),
         };
 
-        var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
-        panel.Controls.Add(Info("Нажмите «Показать» — объекты выделятся в модели Renga (одна группа за раз)."));
         foreach (var (name, ids) in groups)
         {
             var btn = SecondaryButton($"Показать: {name}  ({ids.Count})");
@@ -603,6 +745,20 @@ public sealed class MainForm : Form
             btn.Click += (_, _) => _ctx.SelectManyInRenga!(captured);
             panel.Controls.Add(btn);
         }
+
+        // Итог аудита направлений: расчёт всегда идёт по правильным направлениям, несовпадения —
+        // указание, где в модели ориентация трасс «нарисована» против потока.
+        var audit = _outcome.DirectionAudit;
+        if (audit.Checked > 0)
+            panel.Controls.Add(Info(
+                $"Направления: проверено {audit.Checked}, совпадает {audit.Confirmed}, " +
+                $"против потока {audit.Issues.Count}, неопределимо {audit.Undecidable}. " +
+                "Расчёт ориентации модели не доверяет и всегда использует правильные направления; " +
+                "список несовпадений — в «Проверке модели» (код DIR-101) и «Предпросмотре изменений»."));
+        var hasCoords = work.Objects.Values.SelectMany(o => o.Ports).Any(p => p.HasLocation);
+        if (!hasCoords)
+            panel.Controls.Add(Info("Координаты портов эта версия API Renga не отдаёт — " +
+                                    "автосоединение близких точек неактивно (разрывы ищите через «Открытые концы»)."));
         return panel;
     }
 
@@ -938,6 +1094,31 @@ public sealed class MainForm : Form
         }
         panel.Controls.Add(Info("\r\nВНИМАНИЕ: RengaHeat не заменяет обязательный расчёт в Sankom/DCad и согласование " +
                                 "арматуры по ЧТУ. Пакет сверки — для проверки методик."));
+        return panel;
+    }
+
+    private Control BuildAbout()
+    {
+        var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
+        panel.Controls.Add(Card("RengaHeat",
+            "Параметрический гидравлический расчёт систем отопления для Renga Professional.\r\n\r\n" +
+            $"Версия ядра: {CalculationSession.EngineVersion} · интерфейс: {Build}\r\n" +
+            "Разработчик: Раупов Хусрав"));
+        panel.Controls.Add(Card("Что умеет",
+            "• Чтение сети из Renga (вся модель или только выделенное/изолированные уровни)\r\n" +
+            "• Автоопределение ролей, сторон подачи/обратки и присоединений к ИТП\r\n" +
+            "• Карта: подсветка групп в модели, ручное переназначение ролей и сторон\r\n" +
+            "• Аудит направлений потока и автосоединение близких точек трассировки\r\n" +
+            "• Гидравлика по СП: расходы, потери, критическое кольцо, балансировка, насос\r\n" +
+            "• Подбор диаметров труб по каталогам под лимиты скорости и удельных потерь\r\n" +
+            "• Журнал «Почему это значение?», отчёты и пакет сверки Sankom/DCad"));
+        panel.Controls.Add(Card("Файлы",
+            $"Настройки: {SessionConfig.DefaultPath}\r\n" +
+            "Диагностика: %TEMP%\\RengaHeat_init.log (запуск), %TEMP%\\RengaHeat_types.log (типы модели)"));
+        panel.Controls.Add(Card("Ограничение",
+            "Расчёт не является юридической заменой обязательного гидравлического расчёта " +
+            "в Sankom/DCad и согласования арматуры по ЧТУ. Для подтверждения эквивалентности " +
+            "методик используйте пакет сверки (раздел «Отчёты и экспорт»)."));
         return panel;
     }
 

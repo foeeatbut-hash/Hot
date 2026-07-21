@@ -30,6 +30,7 @@ public sealed class ProfileOverride
     public double? MaxVelocityApartmentMS { get; set; }
     public double? MaxVelocityMainMS { get; set; }
     public double? MaxSpecificLossPaM { get; set; }
+    public double? AutoStitchToleranceMm { get; set; }
 
     /// <summary>Есть ли хотя бы одно переопределение (для отметки «изменено» в UI).</summary>
     public bool Any =>
@@ -39,7 +40,8 @@ public sealed class ProfileOverride
         PowerMarginThermostaticPercent is not null || PowerMarginTechnicalPercent is not null ||
         MaxApartmentRadiatorLengthM is not null || MaxVgpDn is not null || MaxApartmentPexDn is not null ||
         RequireDprBeforeManifold is not null || HeatMeterOnReturn is not null ||
-        MaxVelocityApartmentMS is not null || MaxVelocityMainMS is not null || MaxSpecificLossPaM is not null;
+        MaxVelocityApartmentMS is not null || MaxVelocityMainMS is not null ||
+        MaxSpecificLossPaM is not null || AutoStitchToleranceMm is not null;
 
     /// <summary>Применить переопределения к базовому профилю, вернув новый профиль (record with).</summary>
     public RequirementsProfile ApplyTo(RequirementsProfile p) => p with
@@ -62,5 +64,6 @@ public sealed class ProfileOverride
         MaxVelocityApartmentMS = MaxVelocityApartmentMS ?? p.MaxVelocityApartmentMS,
         MaxVelocityMainMS = MaxVelocityMainMS ?? p.MaxVelocityMainMS,
         MaxSpecificLossPaM = MaxSpecificLossPaM ?? p.MaxSpecificLossPaM,
+        AutoStitchToleranceMm = AutoStitchToleranceMm ?? p.AutoStitchToleranceMm,
     };
 }

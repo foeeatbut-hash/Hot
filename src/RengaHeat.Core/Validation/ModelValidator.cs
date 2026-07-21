@@ -75,7 +75,7 @@ public sealed class ModelValidator(RequirementsProfile profile)
         else if (topology.ItpBoundaryAssumed)
             findings.Add(new Finding(FindingStatus.Assumption, "SRC-003",
                 "ИТП не смоделирован: принят открытый конец магистрали как граница расчёта (допущение). " +
-                "Проверьте точку присоединения в разделе «Подсветка»."));
+                "Проверьте точку присоединения в разделе «Карта»."));
         else if (topology.Sources.Count > 1)
             findings.Add(new Finding(FindingStatus.Assumption, "SRC-002",
                 $"Несколько источников ({topology.Sources.Count}). Каждая зона рассчитывается от своего источника; " +

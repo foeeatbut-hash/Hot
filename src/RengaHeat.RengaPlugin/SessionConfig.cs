@@ -34,6 +34,15 @@ public sealed class SessionConfig
     /// <summary>Выбранные уровни (этажи) для расчёта. Пусто — учитываются все уровни.</summary>
     public List<string> SelectedLevels { get; set; } = new();
 
+    /// <summary>
+    /// Ручные назначения ролей конкретным объектам (раздел «Карта»): UniqueId объекта → имя роли.
+    /// Абсолютный приоритет над авто-классификатором; переживают перезагрузку модели (Id устойчив).
+    /// </summary>
+    public Dictionary<string, string> ObjectRoles { get; set; } = new();
+
+    /// <summary>Ручные назначения стороны сети (раздел «Карта»): UniqueId → Supply/Return/Source.</summary>
+    public Dictionary<string, string> ObjectSides { get; set; } = new();
+
     public static string DefaultPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RengaHeat", "config.json");
 

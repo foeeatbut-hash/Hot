@@ -56,6 +56,12 @@ public sealed record RequirementsProfile
     /// <summary>Лимит удельных линейных потерь, Па/м.</summary>
     public double MaxSpecificLossPaM { get; init; } = 250;
 
+    /// <summary>
+    /// Допуск автосоединения свободных точек трассировки, мм: несоединённые порты ближе этого
+    /// расстояния сшиваются автоматически (как допущение). 0 — автосоединение выключено.
+    /// </summary>
+    public double AutoStitchToleranceMm { get; init; } = 50;
+
     /// <summary>Серии труб по умолчанию для ролей (переопределяются правилами).</summary>
     public string SteelSmallSeries { get; init; } = "ВГП ГОСТ 3262";
     public string SteelLargeSeries { get; init; } = "Электросварная ГОСТ 10704";
@@ -80,6 +86,7 @@ public sealed record RequirementsProfile
         ["profile.maxVelocityApartmentMS"] = MaxVelocityApartmentMS,
         ["profile.maxVelocityMainMS"] = MaxVelocityMainMS,
         ["profile.maxSpecificLossPaM"] = MaxSpecificLossPaM,
+        ["profile.autoStitchToleranceMm"] = AutoStitchToleranceMm,
     };
 
     /// <summary>

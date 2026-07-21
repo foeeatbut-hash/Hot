@@ -33,6 +33,13 @@ public sealed class RengaModelGateway : IModelGateway
     private static System.Reflection.PropertyInfo? _levelIdProp;
     private static bool _levelIdProbed;
 
+    // Кэш рефлексии геометрии порта (размещение → начало координат). Свойства ищутся по интерфейсу
+    // Renga.IPort один раз; если в этой версии API их нет — координаты остаются пустыми, и
+    // автосоединение по близости честно отключается (без падений).
+    private static System.Reflection.PropertyInfo? _portPlacementProp;
+    private static System.Reflection.PropertyInfo? _placementOriginProp;
+    private static bool _portGeomProbed;
+
     public RengaModelGateway(Renga.IApplication application) => _application = application;
 
     /// <summary>
@@ -177,6 +184,8 @@ public sealed class RengaModelGateway : IModelGateway
                 obj.LevelName = ln;
 
         // Связи по сташированным трассам через карту Id→UniqueId (O(1) на связь).
+        // Порядок Src→Tgt трассы сохраняем как смоделированную ориентацию — по ней работает
+        // аудит направлений (расчёт этой ориентации не доверяет).
         foreach (var (src, tgt, sp, tp) in routes)
         {
             if (!idToUid.TryGetValue(src, out var srcUid) || !idToUid.TryGetValue(tgt, out var tgtUid)) continue;
@@ -184,7 +193,7 @@ public sealed class RengaModelGateway : IModelGateway
             var sPort = sp.ToString(CultureInfo.InvariantCulture);
             var tPort = tp.ToString(CultureInfo.InvariantCulture);
             if (na.Ports.Any(p => p.Id == sPort) && nb.Ports.Any(p => p.Id == tPort))
-                model.Connect(na, sPort, nb, tPort);
+                model.Connect(na, sPort, nb, tPort, modeledAtoB: true);
         }
 
         DumpTypeDiagnostics(tally, model.Objects.Count);
@@ -291,11 +300,48 @@ public sealed class RengaModelGateway : IModelGateway
         {
             var port = withPorts.GetByIndex(i);
             var pipeParams = port?.PortConnectionParams as Renga.IPortPipeParams;
+            var (x, y, z) = port is null ? ((double?)null, (double?)null, (double?)null) : PortOrigin(port);
             item.Ports.Add(new Port(
                 Id: i.ToString(CultureInfo.InvariantCulture),
                 Dn: pipeParams is null ? null : (int)Math.Round(pipeParams.NominalDiameter),
-                ConnectionType: pipeParams?.ConnectionType.ToString()));
+                ConnectionType: pipeParams?.ConnectionType.ToString(),
+                Xmm: x, Ymm: y, Zmm: z));
         }
+    }
+
+    /// <summary>
+    /// Глобальные координаты порта, мм (для автосоединения близких свободных точек трассировки).
+    /// API размещения порта отличается между версиями Renga, поэтому свойства ищутся рефлексией
+    /// по интерфейсу IPort (Placement → Origin → X/Y/Z) и кэшируются. Нет свойств — нет координат.
+    /// </summary>
+    private static (double?, double?, double?) PortOrigin(Renga.IPort port)
+    {
+        try
+        {
+            if (!_portGeomProbed)
+            {
+                _portGeomProbed = true;
+                _portPlacementProp = typeof(Renga.IPort).GetProperty("Placement")
+                                     ?? typeof(Renga.IPort).GetProperty("Placement3D");
+            }
+            var placement = _portPlacementProp?.GetValue(port);
+            if (placement is null) return (null, null, null);
+            // Для COM-объектов GetType() даёт __ComObject без свойств — ищем по типу интерфейса,
+            // объявленному в interop-сборке (PropertyType), а не по типу экземпляра.
+            _placementOriginProp ??= _portPlacementProp!.PropertyType.GetProperty("Origin")
+                                     ?? _portPlacementProp.PropertyType.GetProperty("OriginPoint");
+            var origin = _placementOriginProp?.GetValue(placement);
+            if (origin is null) return (null, null, null);
+            var ot = _placementOriginProp!.PropertyType;
+            double? Coord(string name) => ot.GetProperty(name)?.GetValue(origin) switch
+            {
+                double d => d,
+                float f => f,
+                _ => null,
+            };
+            return (Coord("X"), Coord("Y"), Coord("Z"));
+        }
+        catch { return (null, null, null); }
     }
 
     /// <summary>
@@ -314,6 +360,47 @@ public sealed class RengaModelGateway : IModelGateway
             _application.Selection.SetSelectedObjects(new[] { mo.Id });
         }
         catch { /* переход к объекту не должен ронять UI */ }
+    }
+
+    /// <summary>
+    /// UniqueId объектов, выделенных сейчас в Renga (для переназначения ролей из «Карты»).
+    /// Малое выделение резолвится точечно через GetById; большое — одним проходом коллекции,
+    /// чтобы не получить O(N²) на крупных моделях.
+    /// </summary>
+    public IReadOnlyList<string> GetSelectedUniqueIds()
+    {
+        try
+        {
+            var selected = GetSelectedObjectIds();
+            if (selected.Count == 0) return Array.Empty<string>();
+            var objects = _application.Project?.Model.GetObjects();
+            if (objects is null) return Array.Empty<string>();
+
+            var result = new List<string>(selected.Count);
+            if (selected.Count <= 64)
+            {
+                foreach (var id in selected)
+                    try
+                    {
+                        var mo = objects.GetById(id);
+                        if (mo is not null) result.Add(mo.UniqueIdS);
+                    }
+                    catch { /* объект мог быть удалён */ }
+            }
+            else
+            {
+                var count = objects.Count;
+                for (var i = 0; i < count && result.Count < selected.Count; i++)
+                    try
+                    {
+                        var mo = objects.GetByIndex(i);
+                        if (mo is not null && selected.Contains(mo.Id)) result.Add(mo.UniqueIdS);
+                    }
+                    catch { /* нечитаемый объект пропускаем */ }
+            }
+            return result;
+        }
+        catch { return Array.Empty<string>(); }
     }
 
     /// <summary>Выделить в Renga сразу набор объектов по устойчивым идентификаторам (подсветка группы).</summary>

@@ -57,6 +57,14 @@ public sealed class ModelBuilder
     public void Connect(NetworkObject a, int portA, NetworkObject b, int portB) =>
         _model.Connect(a, a.Ports[portA].Id, b, b.Ports[portB].Id);
 
+    /// <summary>Соединить с фиксацией смоделированной ориентации A→B (для аудита направлений).</summary>
+    public void ConnectDirected(NetworkObject a, int portA, NetworkObject b, int portB) =>
+        _model.Connect(a, a.Ports[portA].Id, b, b.Ports[portB].Id, modeledAtoB: true);
+
+    /// <summary>Задать координаты порта, мм (для тестов автосоединения точек по близости).</summary>
+    public void SetPortLocation(NetworkObject obj, int port, double xMm, double yMm, double zMm) =>
+        obj.Ports[port] = obj.Ports[port] with { Xmm = xMm, Ymm = yMm, Zmm = zMm };
+
     /// <summary>Соединить цепочку объектов последовательно (порт 1 → порт 0 следующего).</summary>
     public void Chain(params NetworkObject[] chain)
     {

@@ -26,6 +26,9 @@ public sealed class PluginContext
     /// <summary>Выделить/подсветить группу объектов в Renga по идентификаторам (необязательно).</summary>
     public Action<IReadOnlyList<string>>? SelectManyInRenga { get; init; }
 
+    /// <summary>UniqueId объектов, выделенных сейчас в Renga (для переназначения ролей в «Карте»).</summary>
+    public Func<IReadOnlyList<string>>? GetSelectedUniqueIds { get; init; }
+
     /// <summary>Применить подтверждённые изменения (необязательно; null — применение недоступно).</summary>
     public Func<IReadOnlyList<ModelChange>, string>? ApplyChanges { get; init; }
 

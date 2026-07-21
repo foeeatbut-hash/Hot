@@ -42,6 +42,12 @@ public sealed class SessionOutcome
     public required ChangeSet PreviewChanges { get; init; }
     public IReadOnlyList<ProvenanceRecord> ValueJournal { get; init; } = Array.Empty<ProvenanceRecord>();
 
+    /// <summary>Автоматически сшитые соединения близких свободных точек (допущения, для подсветки).</summary>
+    public IReadOnlyList<StitchedPair> Stitched { get; init; } = Array.Empty<StitchedPair>();
+
+    /// <summary>Аудит направлений: где ориентация трасс модели противоречит расчётному потоку.</summary>
+    public DirectionAuditResult DirectionAudit { get; init; } = DirectionAuditResult.Empty;
+
     /// <summary>
     /// Сеть с критической неоднозначностью не получает статус «готово».
     /// Готово ⇔ нет ошибок/конфликтов, все фрагменты сошлись.
@@ -85,8 +91,17 @@ public sealed class CalculationSession
         // 1. Классификация ролей (правила + ОВ_Роль + ручные назначения)
         Classifier.ClassifyAll(model);
 
+        // 1а. Автосоединение свободных точек трассировки, стоящих рядом (до топологии, чтобы
+        // сшитые связи участвовали в определении фрагментов, сторон и открытых концов).
+        var stitched = ProximityStitcher.Stitch(model, Profile.AutoStitchToleranceMm);
+
         // 2. Топология: связность, стороны, направления, источники
         var topology = Direction.Analyze(model);
+
+        // 2а. Аудит направлений: ориентация трасс модели против расчётного потока.
+        // Расчёт ориентации модели не доверяет — гидравлика идёт по собственным направлениям;
+        // несовпадения показываются инженеру для исправления модели.
+        var directionAudit = Topology.DirectionAudit.Audit(model, topology);
 
         // 3. Контекст разрешения значений (сопоставление)
         var ctx = ResolutionContextOverride ?? new ResolutionContext
@@ -103,6 +118,34 @@ public sealed class CalculationSession
 
         var assumptions = new List<string>(topology.Notes);
         var changeSet = new ChangeSet();
+
+        // Автосшитые соединения — допущения с привязкой к объекту (видны в проверке и журнале).
+        foreach (var s in stitched)
+            modelFindings.Add(new Finding(FindingStatus.Assumption, "CON-101",
+                $"Соединено автоматически по близости точек: «{s.ObjectAName}» ↔ «{s.ObjectBName}» " +
+                $"(зазор {s.DistanceMm:0.#} мм ≤ допуска {Profile.AutoStitchToleranceMm:0} мм).",
+                s.ObjectAId));
+        if (stitched.Count > 0)
+            assumptions.Add($"Автосоединение точек трассировки: сшито {stitched.Count} " +
+                            $"разрывов (допуск {Profile.AutoStitchToleranceMm:0} мм).");
+
+        // Несовпадения направлений — предупреждения + предложение исправления в предпросмотре.
+        foreach (var issue in directionAudit.Issues)
+        {
+            modelFindings.Add(new Finding(FindingStatus.Warning, "DIR-101",
+                $"Ориентация трассы против потока: {issue}. Расчёт использует правильное " +
+                "направление; ориентацию в модели стоит развернуть.", issue.ObjectAId));
+            changeSet.Add(new ModelChange(ChangeKind.FixDirection, issue.ObjectAId, issue.ObjectAName,
+                "Направление трассы", $"{issue.ObjectAName} → {issue.ObjectBName}",
+                issue.CorrectFromId == issue.ObjectAId
+                    ? $"{issue.ObjectAName} → {issue.ObjectBName}"
+                    : $"{issue.ObjectBName} → {issue.ObjectAName}",
+                issue.Basis, ApiSupported: false));
+        }
+        if (directionAudit.Checked > 0)
+            assumptions.Add($"Аудит направлений: проверено {directionAudit.Checked}, " +
+                            $"подтверждено {directionAudit.Confirmed}, против потока " +
+                            $"{directionAudit.Issues.Count}, неопределимо {directionAudit.Undecidable}.");
 
         // 5. Расчёт по фрагментам от каждого источника
         var engine = new CalculationEngine(Profile, Scenario, PipeCatalog);
@@ -152,6 +195,8 @@ public sealed class CalculationSession
             Topology = topology,
             PreviewChanges = changeSet,
             ValueJournal = resolver.Journal,
+            Stitched = stitched,
+            DirectionAudit = directionAudit,
             Provenance = new CalculationProvenance(
                 EngineVersion, Profile.Name, Profile.Version, Profile.SourceDocument,
                 Scenario.Name,
