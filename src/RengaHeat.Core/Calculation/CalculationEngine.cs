@@ -145,7 +145,21 @@ public sealed class CalculationEngine(RequirementsProfile profile, CalculationSc
             .Select(d => new FixedFlowBranch(d.Object.Id, d.SupplyNode, d.ReturnNode, d.MassFlowKgS))
             .ToList();
 
+        // Опорные узлы должны реально входить в схему: у «висящего» источника (например, принятая
+        // граница ИТП, не связанная трассами с приборами) их там нет — это ошибка данных модели,
+        // а не повод для аварийного завершения расчёта.
+        var schemeNodes = new HashSet<string>(
+            resistiveBranches.SelectMany(b => new[] { b.FromNode, b.ToNode })
+                .Concat(fixedFlows.SelectMany(f => new[] { f.FromNode, f.ToNode })));
         var references = new[] { network.SourceSupplyNode, network.SourceReturnNode };
+        if (!references.All(schemeNodes.Contains))
+        {
+            findings.Add(new Finding(FindingStatus.Error, "CALC-003",
+                $"Источник «{source.Name}» не связан с гидравлической схемой: между ним и приборами " +
+                "нет непрерывной цепочки труб. Соедините трассы (или включите автосоединение точек " +
+                "в «Исходных»), либо назначьте другой источник в «Карте».", source.Id));
+            return Failed(source, findings.ToArray());
+        }
         var solve = new HydraulicSolver().Solve(resistiveBranches, fixedFlows, references);
         if (!solve.Converged)
             findings.Add(new Finding(FindingStatus.Warning, "CALC-002",

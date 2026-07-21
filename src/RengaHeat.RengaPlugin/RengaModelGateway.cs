@@ -40,8 +40,8 @@ public sealed class RengaModelGateway : IModelGateway
     // Renga.IPort один раз; если в этой версии API их нет — координаты остаются пустыми, и
     // автосоединение по близости честно отключается (без падений).
     private static System.Reflection.PropertyInfo? _portPlacementProp;
-    private static System.Reflection.PropertyInfo? _placementOriginProp;
     private static bool _portGeomProbed;
+    private static bool _portGeomDumped;   // одноразовый дамп членов Placement/Origin в журнал
 
     public RengaModelGateway(Renga.IApplication application) => _application = application;
 
@@ -219,15 +219,27 @@ public sealed class RengaModelGateway : IModelGateway
         // Связи по сташированным трассам через карту Id→UniqueId (O(1) на связь).
         // Порядок Src→Tgt трассы сохраняем как смоделированную ориентацию — по ней работает
         // аудит направлений (расчёт этой ориентации не доверяет).
+        // Если у конца трассы порт не был прочитан (объект без IEntityWithPorts, например точка
+        // трассировки), порт создаётся синтетически — иначе реальная связь теряется и сеть
+        // рассыпается на фрагменты.
+        int lostEnds = 0, synthPorts = 0;
         foreach (var (src, tgt, sp, tp) in routes)
         {
-            if (!idToUid.TryGetValue(src, out var srcUid) || !idToUid.TryGetValue(tgt, out var tgtUid)) continue;
-            if (!model.Objects.TryGetValue(srcUid, out var na) || !model.Objects.TryGetValue(tgtUid, out var nb)) continue;
+            if (!idToUid.TryGetValue(src, out var srcUid) || !idToUid.TryGetValue(tgt, out var tgtUid) ||
+                !model.Objects.TryGetValue(srcUid, out var na) || !model.Objects.TryGetValue(tgtUid, out var nb))
+            {
+                lostEnds++;   // конец трассы вне инженерной выборки (или вне выделения)
+                continue;
+            }
             var sPort = sp.ToString(CultureInfo.InvariantCulture);
             var tPort = tp.ToString(CultureInfo.InvariantCulture);
-            if (na.Ports.Any(p => p.Id == sPort) && nb.Ports.Any(p => p.Id == tPort))
-                model.Connect(na, sPort, nb, tPort, modeledAtoB: true);
+            if (na.Ports.All(p => p.Id != sPort)) { na.Ports.Add(new Port(sPort)); synthPorts++; }
+            if (nb.Ports.All(p => p.Id != tPort)) { nb.Ports.Add(new Port(tPort)); synthPorts++; }
+            // Порт мог быть уже занят другой трассой (дубль) — Connect перезапишет корректно.
+            model.Connect(na, sPort, nb, tPort, modeledAtoB: true);
         }
+        if (lostEnds > 0 || synthPorts > 0)
+            UiLog.Write("чтение", $"Трассы: концов вне выборки {lostEnds}, синтетических портов добавлено {synthPorts}.");
 
         var withLevel = model.Objects.Values.Count(o => o.LevelId is not null);
         DumpTypeDiagnostics(tally, model.Objects.Count, levelNames.Count, withLevel);
@@ -383,23 +395,55 @@ public sealed class RengaModelGateway : IModelGateway
             }
             var placement = _portPlacementProp?.GetValue(port);
             if (placement is null) return (null, null, null);
-            // Для COM-объектов GetType() даёт __ComObject без свойств — ищем по типу интерфейса,
-            // объявленному в interop-сборке (PropertyType), а не по типу экземпляра.
-            _placementOriginProp ??= _portPlacementProp!.PropertyType.GetProperty("Origin")
-                                     ?? _portPlacementProp.PropertyType.GetProperty("OriginPoint");
-            var origin = _placementOriginProp?.GetValue(placement);
-            if (origin is null) return (null, null, null);
-            var ot = _placementOriginProp!.PropertyType;
-            double? Coord(string name) => ot.GetProperty(name)?.GetValue(origin) switch
+
+            // Placement3D/Point3D в interop — структуры: данные лежат в ПОЛЯХ, а COM-интерфейсы
+            // отдают их свойствами. Member() пробует оба вида и оба типа (реальный и объявленный).
+            var origin = Member(placement, "Origin", _portPlacementProp!.PropertyType)
+                         ?? Member(placement, "OriginPoint", _portPlacementProp.PropertyType)
+                         ?? Member(placement, "Position", _portPlacementProp.PropertyType);
+            double? Coord(string name) => origin is null ? null : Member(origin, name) switch
             {
                 double d => d,
                 float f => f,
+                int i => i,
                 _ => null,
             };
-            return (Coord("X"), Coord("Y"), Coord("Z"));
+            var (x, y, z) = (Coord("X"), Coord("Y"), Coord("Z"));
+
+            // Первый порт, у которого размещение есть, а координаты не извлеклись, — дампим состав
+            // типов в журнал: по нему видно точные имена членов в этой версии API.
+            if (!_portGeomDumped && (x is null || y is null || z is null))
+            {
+                _portGeomDumped = true;
+                UiLog.Write("api", $"Placement получен ({placement.GetType().Name}), но координаты не извлечены. " +
+                    $"Члены размещения: {DumpMembers(placement.GetType())}" +
+                    (origin is null ? "" : $". Члены Origin ({origin.GetType().Name}): {DumpMembers(origin.GetType())}"));
+            }
+            return (x, y, z);
         }
         catch { return (null, null, null); }
     }
+
+    /// <summary>Прочитать член name (свойство или поле) у объекта: сперва по реальному типу
+    /// (структуры interop с полями), затем по объявленному (COM-интерфейсы).</summary>
+    private static object? Member(object owner, string name, Type? declaredType = null)
+    {
+        foreach (var t in new[] { owner.GetType(), declaredType })
+        {
+            if (t is null) continue;
+            try
+            {
+                if (t.GetProperty(name) is { } p) return p.GetValue(owner);
+                if (t.GetField(name) is { } f) return f.GetValue(owner);
+            }
+            catch { /* пробуем следующий тип */ }
+        }
+        return null;
+    }
+
+    private static string DumpMembers(Type t) =>
+        string.Join(", ", t.GetProperties().Select(p => $"{p.Name}:{p.PropertyType.Name}")
+            .Concat(t.GetFields().Select(f => $"{f.Name}:{f.FieldType.Name} (поле)")));
 
     /// <summary>
     /// Выделить объект в Renga по устойчивому идентификатору (UniqueIdS) — для перехода из таблиц UI.
