@@ -31,7 +31,7 @@ public sealed class MainForm : Form
 
     // Видимый штамп версии плагина. Увеличивайте при каждом изменении UI — по нему сразу
     // видно в заголовке окна, свежая DLL загружена или старая.
-    private const string Build = "сборка 13";
+    private const string Build = "сборка 14";
 
     private readonly Font _ui = new("Segoe UI", 9f);
     private readonly Font _uiBold = new("Segoe UI", 9f, FontStyle.Bold);
@@ -58,7 +58,7 @@ public sealed class MainForm : Form
     {
         "Обзор", "Исходные", "Уровни", "Карта", "Классификатор", "Сопоставление",
         "Проверка модели", "Расчёт", "Балансировка", "Предпросмотр изменений",
-        "Отчёты и экспорт", "О программе",
+        "Отчёты и экспорт", "Журнал", "О программе",
     };
 
     public MainForm(PluginContext ctx)
@@ -79,6 +79,9 @@ public sealed class MainForm : Form
         _nav.SelectedIndex = 0;
         // Модель НЕ читаем при открытии: на больших проектах это долго. Инженер сам выбирает,
         // загрузить всё или только выделенное (изолированные уровни), кнопками на панели.
+        UiLog.Write("окно", $"Открыто окно плагина ({Build}). Настройки: {SessionConfig.DefaultPath}; " +
+                            $"уровней выбрано {_config.SelectedLevels.Count}, ручных назначений " +
+                            $"{_config.ObjectRoles.Count + _config.ObjectSides.Count}.");
     }
 
     /// <summary>
@@ -88,16 +91,36 @@ public sealed class MainForm : Form
     private void AutoCalculate()
     {
         var work = WorkingModel();
-        if (work is null || work.Objects.Count is 0 or > 20000) return;
+        if (work is null || work.Objects.Count is 0 or > 20000)
+        {
+            if (work is { Objects.Count: > 20000 })
+                UiLog.Write("расчёт", $"Авто-расчёт пропущен: {work.Objects.Count} объектов (> 20000), запустите ▶ вручную.");
+            return;
+        }
         try
         {
             Cursor = Cursors.WaitCursor;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             _outcome = RunSessionOn(work);
+            UiLog.Write("расчёт", $"Авто-расчёт: {sw.Elapsed.TotalSeconds:0.0} с. {OutcomeSummary(_outcome)}");
             UpdateStatus();
         }
-        catch { /* авто-расчёт не критичен: инженер запустит вручную кнопкой «Рассчитать» */ }
+        catch (Exception ex) { UiLog.Error("авто-расчёт", ex); /* инженер запустит вручную кнопкой ▶ */ }
         finally { Cursor = Cursors.Default; }
         if (_nav.SelectedItem is string s) ShowSection(s);
+    }
+
+    /// <summary>Краткий итог расчёта для журнала: источники, контуры, замечания, готовность.</summary>
+    private static string OutcomeSummary(SessionOutcome o)
+    {
+        var errors = o.AllFindings.Count(f => f.Status == FindingStatus.Error);
+        var warnings = o.AllFindings.Count(f => f.Status == FindingStatus.Warning);
+        var decisions = o.AllFindings.Count(f => f.Status == FindingStatus.NeedsDecision);
+        return $"Источников {o.Topology.Sources.Count}, контуров {o.Results.Count}, " +
+               $"фрагментов {o.Topology.Fragments.Count}, автосшивок {o.Stitched.Count}, " +
+               $"направлений против потока {o.DirectionAudit.Issues.Count}; " +
+               $"ошибок {errors}, предупреждений {warnings}, требуют решения {decisions}; " +
+               $"готовность: {(o.IsReady ? "ГОТОВО" : "есть замечания")}.";
     }
 
     /// <summary>
@@ -122,6 +145,7 @@ public sealed class MainForm : Form
                 {
                     // Пустое выделение — не затираем прежнюю модель, а предлагаем полную загрузку.
                     Cursor = Cursors.Default;
+                    UiLog.Write("диалог", "Показан вопрос: выделение пусто — загрузить всю модель?");
                     var answer = MessageBox.Show(this,
                         "В Renga ничего не выделено.\r\n\r\n" +
                         "Чтобы загрузить только нужное:\r\n" +
@@ -131,6 +155,7 @@ public sealed class MainForm : Form
                         "Или загрузить всю модель сейчас? Чтение ускорено, а нужные этажи " +
                         "можно отметить в разделе «Уровни».",
                         "RengaHeat", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                    UiLog.Write("диалог", $"Ответ инженера: {(answer == DialogResult.Yes ? "Да — читаем всю модель" : "Нет")}.");
                     if (answer != DialogResult.Yes) return;
                     Cursor = Cursors.WaitCursor;
                     _model = _ctx.ReadModel();
@@ -141,9 +166,17 @@ public sealed class MainForm : Form
                 _model = _ctx.ReadModel();
             }
         }
-        catch (Exception ex) { _model = null; Msg("Не удалось прочитать модель: " + ex.Message, MessageBoxIcon.Error); }
+        catch (Exception ex)
+        {
+            _model = null;
+            UiLog.Error("загрузка модели", ex);
+            Msg("Не удалось прочитать модель: " + ex.Message, MessageBoxIcon.Error);
+        }
         finally { Cursor = Cursors.Default; }
 
+        if (_model is not null)
+            UiLog.Write("модель", $"В плагин загружено: объектов {_model.Objects.Count}, " +
+                                  $"связей {_model.Connections.Count}, уровней в сводке {_model.LevelSummary().Count}.");
         UpdateStatus();
         AutoCalculate();
         if (_nav.SelectedItem is string s) ShowSection(s);
@@ -167,11 +200,11 @@ public sealed class MainForm : Form
         var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = NavBg, Padding = new Padding(4, 4, 0, 0), WrapContents = false };
         toolbar.Paint += (_, e) => e.Graphics.DrawLine(new Pen(BorderColor), 0, toolbar.Height - 1, toolbar.Width, toolbar.Height - 1);
         var loadSelBtn = IconToolButton("", "Загрузить выделенное в Renga (изолированные уровни)");   // Filter
-        loadSelBtn.Click += (_, _) => LoadModel(selectedOnly: true);
+        loadSelBtn.Click += (_, _) => { UiLog.Write("клик", "Кнопка «Загрузить выделенное»."); LoadModel(selectedOnly: true); };
         var loadAllBtn = IconToolButton("", "Загрузить всю модель (может быть долго)");              // Download
-        loadAllBtn.Click += (_, _) => LoadModel(selectedOnly: false);
+        loadAllBtn.Click += (_, _) => { UiLog.Write("клик", "Кнопка «Загрузить всю модель»."); LoadModel(selectedOnly: false); };
         var runBtn = IconToolButton("", "Рассчитать");                                                // Play
-        runBtn.Click += (_, _) => RunCalculation();
+        runBtn.Click += (_, _) => { UiLog.Write("клик", "Кнопка «Рассчитать» (тулбар)."); RunCalculation(); };
         toolbar.Controls.Add(loadSelBtn);
         toolbar.Controls.Add(loadAllBtn);
         toolbar.Controls.Add(Separator());
@@ -187,7 +220,12 @@ public sealed class MainForm : Form
         _nav.ItemHeight = 24;
         _nav.IntegralHeight = false;
         foreach (var s in Sections) _nav.Items.Add(s);
-        _nav.SelectedIndexChanged += (_, _) => { if (_nav.SelectedItem is string s) ShowSection(s); };
+        _nav.SelectedIndexChanged += (_, _) =>
+        {
+            if (_nav.SelectedItem is not string s) return;
+            UiLog.Write("раздел", $"Открыт раздел «{s}».");
+            ShowSection(s);
+        };
         var leftPanel = new Panel { Dock = DockStyle.Fill, BackColor = NavBg };
         leftPanel.Controls.Add(Framed(_nav, new Padding(8, 0, 6, 8)));
         leftPanel.Controls.Add(new Label
@@ -284,6 +322,7 @@ public sealed class MainForm : Form
             "Балансировка" => BuildBalancing(),
             "Предпросмотр изменений" => BuildPreview(),
             "Отчёты и экспорт" => BuildReports(),
+            "Журнал" => BuildLog(),
             "О программе" => BuildAbout(),
             _ => Info("Раздел в разработке."),
         };
@@ -366,12 +405,20 @@ public sealed class MainForm : Form
         {
             Cursor = Cursors.WaitCursor;
             _config.Save();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            UiLog.Write("расчёт", $"Запуск расчёта: рабочая модель {work.Objects.Count} объектов, " +
+                                  $"{work.Connections.Count} связей (выбрано уровней: {_config.SelectedLevels.Count}).");
             _outcome = RunSessionOn(work);
+            UiLog.Write("расчёт", $"Расчёт завершён за {sw.Elapsed.TotalSeconds:0.0} с. {OutcomeSummary(_outcome)}");
             UpdateStatus();
             _nav.SelectedItem = "Расчёт";
             ShowSection("Расчёт");
         }
-        catch (Exception ex) { Msg("Ошибка расчёта: " + ex.Message, MessageBoxIcon.Error); }
+        catch (Exception ex)
+        {
+            UiLog.Error("расчёт", ex);
+            Msg("Ошибка расчёта: " + ex.Message, MessageBoxIcon.Error);
+        }
         finally { Cursor = Cursors.Default; }
     }
 
@@ -516,7 +563,12 @@ public sealed class MainForm : Form
         foreach (var s in Scenarios) scenario.Items.Add(s.Name);
         scenario.SelectedItem = _config.ScenarioName ?? "Базовый";
         if (scenario.SelectedIndex < 0) scenario.SelectedIndex = 0;
-        scenario.SelectedIndexChanged += (_, _) => { _config.ScenarioName = scenario.SelectedItem?.ToString(); _config.Save(); };
+        scenario.SelectedIndexChanged += (_, _) =>
+        {
+            _config.ScenarioName = scenario.SelectedItem?.ToString();
+            _config.Save();
+            UiLog.Write("исходные", $"Сценарий → «{_config.ScenarioName}».");
+        };
         header.Controls.Add(scenario);
 
         var grid = new DataGridView
@@ -561,8 +613,12 @@ public sealed class MainForm : Form
             if (idx < 0) return;
             var text = grid.Rows[e.RowIndex].Cells[cVal.Index].Value?.ToString() ?? "";
             var ok = rows[idx].Apply(_config.Overrides, text);
-            if (ok) _config.Save();
-            else Msg("Некорректное значение — оставлено прежнее.", MessageBoxIcon.Warning);
+            if (ok)
+            {
+                _config.Save();
+                UiLog.Write("исходные", $"«{rows[idx].Label}» → «{text}».");
+            }
+            else Msg($"Некорректное значение «{text}» для «{rows[idx].Label}» — оставлено прежнее.", MessageBoxIcon.Warning);
             // Показать нормализованное/унаследованное значение без повторного входа.
             updating = true;
             grid.Rows[e.RowIndex].Cells[cVal.Index].Value = rows[idx].Show(EffectiveProfile());
@@ -576,6 +632,7 @@ public sealed class MainForm : Form
         {
             _config.Overrides = new ProfileOverride();
             _config.Save();
+            UiLog.Write("исходные", "Сброс исходных данных к профилю ЧТУ.");
             Fill();
         };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
@@ -610,6 +667,9 @@ public sealed class MainForm : Form
             // Все отмечены — это «все уровни» (пустой список = фильтр выключен).
             _config.SelectedLevels = chosen.Count == levels.Count ? new List<string>() : chosen;
             _config.Save();
+            UiLog.Write("уровни", _config.SelectedLevels.Count == 0
+                ? "Выбраны все уровни (фильтр выключен)."
+                : $"Выбраны уровни: {string.Join(", ", _config.SelectedLevels)}.");
         }
         // ItemCheck срабатывает до применения галочки — читаем состояние после (BeginInvoke).
         list.ItemCheck += (_, _) => BeginInvoke(new Action(Store));
@@ -694,6 +754,7 @@ public sealed class MainForm : Form
                 else { _config.ObjectRoles.Remove(uid); _config.ObjectSides.Remove(uid); }
             }
             _config.Save();
+            UiLog.Write("карта", $"Назначение «{opt.Label}» применено к {uids.Count} выделенным объектам.");
             RecalculateInPlace();   // назначения сразу учитываются в топологии и расчёте
         };
         assignRow.Controls.Add(combo);
@@ -704,6 +765,7 @@ public sealed class MainForm : Form
             var clearBtn = SecondaryButton($"Сбросить назначения ({assigned})");
             clearBtn.Click += (_, _) =>
             {
+                UiLog.Write("карта", $"Сброшены ручные назначения ({_config.ObjectRoles.Count + _config.ObjectSides.Count}).");
                 _config.ObjectRoles.Clear();
                 _config.ObjectSides.Clear();
                 _config.Save();
@@ -830,6 +892,7 @@ public sealed class MainForm : Form
             if (role == ObjectRole.Unknown) _config.TypeRoles.Remove(typeS);
             else _config.TypeRoles[typeS] = role.ToString();
             _config.Save();
+            UiLog.Write("классификатор", $"Тип {typeS} → роль «{RoleNames.Of(role)}».");
         };
 
         var caption = new Label
@@ -885,6 +948,7 @@ public sealed class MainForm : Form
             if (string.IsNullOrEmpty(v)) _config.FieldProperties.Remove(key);
             else _config.FieldProperties[key] = v;
             _config.Save();
+            UiLog.Write("сопоставление", $"Поле {key} → свойство «{v}».");
         };
 
         var caption = new Label
@@ -1115,6 +1179,70 @@ public sealed class MainForm : Form
         return panel;
     }
 
+    /// <summary>
+    /// «Журнал»: полный протокол сессии — клики, загрузки, длительности, ответы плагина, диалоги,
+    /// ошибки со стеком. Тот же журнал непрерывно пишется в %TEMP%\RengaHeat_ui.log.
+    /// </summary>
+    private Control BuildLog()
+    {
+        var box = new TextBox
+        {
+            Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false,
+            Dock = DockStyle.Fill, BorderStyle = BorderStyle.None, BackColor = PanelBg,
+            Font = new Font("Consolas", 8.75f), Text = UiLog.Snapshot(),
+        };
+        // Показать хвост журнала (последние события) сразу.
+        box.SelectionStart = box.TextLength;
+        box.ScrollToCaret();
+
+        var caption = new Label
+        {
+            Text = $"Записей: {UiLog.Count}. Журнал также пишется в файл: {UiLog.FilePath}",
+            Dock = DockStyle.Fill, ForeColor = TextMuted, Font = _ui, TextAlign = ContentAlignment.MiddleLeft,
+        };
+
+        var save = PrimaryButton("Сохранить журнал (.txt)");
+        save.Click += (_, _) =>
+        {
+            using var dlg = new SaveFileDialog
+            {
+                FileName = $"RengaHeat_журнал_{DateTime.Now:yyyy-MM-dd_HH-mm}.txt",
+                Filter = "Текст (*.txt)|*.txt",
+            };
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+            try
+            {
+                System.IO.File.WriteAllText(dlg.FileName, UiLog.Snapshot(), new System.Text.UTF8Encoding(true));
+                Msg("Журнал сохранён: " + dlg.FileName);
+            }
+            catch (Exception ex) { Msg("Ошибка сохранения журнала: " + ex.Message, MessageBoxIcon.Error); }
+        };
+        var copy = SecondaryButton("Копировать всё");
+        copy.Click += (_, _) =>
+        {
+            try { Clipboard.SetText(UiLog.Snapshot()); UiLog.Write("журнал", "Журнал скопирован в буфер."); }
+            catch (Exception ex) { Msg("Не удалось скопировать: " + ex.Message, MessageBoxIcon.Error); }
+        };
+        var refresh = SecondaryButton("Обновить");
+        refresh.Click += (_, _) =>
+        {
+            box.Text = UiLog.Snapshot();
+            caption.Text = $"Записей: {UiLog.Count}. Журнал также пишется в файл: {UiLog.FilePath}";
+            box.SelectionStart = box.TextLength;
+            box.ScrollToCaret();
+        };
+        var clear = SecondaryButton("Очистить");
+        clear.Click += (_, _) => { UiLog.Clear(); box.Text = UiLog.Snapshot(); };
+
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
+        buttons.Controls.Add(save);
+        buttons.Controls.Add(copy);
+        buttons.Controls.Add(refresh);
+        buttons.Controls.Add(clear);
+
+        return VStack(caption, 30, Framed(box, new Padding(0)), buttons, 44);
+    }
+
     private Control BuildAbout()
     {
         var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
@@ -1132,7 +1260,8 @@ public sealed class MainForm : Form
             "• Журнал «Почему это значение?», отчёты и пакет сверки Sankom/DCad"));
         panel.Controls.Add(Card("Файлы",
             $"Настройки: {SessionConfig.DefaultPath}\r\n" +
-            "Диагностика: %TEMP%\\RengaHeat_init.log (запуск), %TEMP%\\RengaHeat_types.log (типы модели)"));
+            "Диагностика: %TEMP%\\RengaHeat_init.log (запуск), %TEMP%\\RengaHeat_types.log (типы модели),\r\n" +
+            "%TEMP%\\RengaHeat_ui.log (полный журнал действий — раздел «Журнал»)"));
         panel.Controls.Add(Card("Ограничение",
             "Расчёт не является юридической заменой обязательного гидравлического расчёта " +
             "в Sankom/DCad и согласования арматуры по ЧТУ. Для подтверждения эквивалентности " +
@@ -1243,13 +1372,17 @@ public sealed class MainForm : Form
         Margin = new Padding(0, 6, 0, 6), MaximumSize = new Size(760, 0),
     };
 
-    private void Msg(string text, MessageBoxIcon icon = MessageBoxIcon.Information) =>
+    private void Msg(string text, MessageBoxIcon icon = MessageBoxIcon.Information)
+    {
+        UiLog.Write("диалог", $"[{icon}] {text.Replace("\r\n", " | ")}");
         MessageBox.Show(this, text, "RengaHeat", MessageBoxButtons.OK, icon);
+    }
 
     /// <summary>Журнал происхождения значений объекта — команда «Почему это значение?».</summary>
     private void ShowProvenance(string objectId)
     {
         if (_outcome is null) return;
+        UiLog.Write("клик", $"«Почему это значение?» для объекта {objectId}.");
         var records = _outcome.ValueJournal.Where(r => r.ObjectId == objectId).ToList();
         var name = _model is not null && _model.Objects.TryGetValue(objectId, out var mo) ? mo.Name : objectId;
         var text = records.Count == 0

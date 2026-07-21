@@ -91,6 +91,7 @@ public sealed class RengaModelGateway : IModelGateway
     public HeatingModel ReadSelected()
     {
         var ids = GetSelectedObjectIds();
+        UiLog.Write("чтение", $"Запрошено чтение выделенного: в Renga выделено {ids.Count} объектов.");
         return ReadModelCore(ids);   // пустой набор → пустая модель (ничего не выделено)
     }
 
@@ -120,6 +121,10 @@ public sealed class RengaModelGateway : IModelGateway
     /// </summary>
     private HeatingModel ReadModelCore(IReadOnlySet<int>? onlyIds)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        UiLog.Write("чтение", onlyIds is null
+            ? "Начато чтение всей модели."
+            : $"Начато чтение по выделению ({onlyIds.Count} Id).");
         var project = _application.Project
             ?? throw new InvalidOperationException("В Renga не открыт проект.");
         var model = new HeatingModel
@@ -226,6 +231,12 @@ public sealed class RengaModelGateway : IModelGateway
 
         var withLevel = model.Objects.Values.Count(o => o.LevelId is not null);
         DumpTypeDiagnostics(tally, model.Objects.Count, levelNames.Count, withLevel);
+        var withCoords = model.Objects.Values.SelectMany(o => o.Ports).Count(p => p.HasLocation);
+        UiLog.Write("чтение",
+            $"Чтение завершено за {sw.Elapsed.TotalSeconds:0.0} с: инженерных объектов {model.Objects.Count}, " +
+            $"связей {model.Connections.Count}, уровней {levelNames.Count}, " +
+            $"с привязкой к уровню {withLevel}, портов с координатами {withCoords} " +
+            $"(LevelId: {(_levelIdProp is null ? "НЕ найден в API" : _levelIdProp.DeclaringType?.Name)}).");
         return model;
     }
 
@@ -430,9 +441,10 @@ public sealed class RengaModelGateway : IModelGateway
                     }
                     catch { /* нечитаемый объект пропускаем */ }
             }
+            UiLog.Write("выделение", $"Прочитано выделение Renga: {selected.Count} Id → {result.Count} UniqueId.");
             return result;
         }
-        catch { return Array.Empty<string>(); }
+        catch (Exception ex) { UiLog.Error("чтение выделения", ex); return Array.Empty<string>(); }
     }
 
     /// <summary>Выделить в Renga сразу набор объектов по устойчивым идентификаторам (подсветка группы).</summary>
@@ -450,9 +462,10 @@ public sealed class RengaModelGateway : IModelGateway
                 var mo = objects.GetByUniqueId(guid);
                 if (mo is not null) ids.Add(mo.Id);
             }
+            UiLog.Write("подсветка", $"Выделение в Renga: запрошено {uniqueIds.Count}, найдено {ids.Count}.");
             if (ids.Count > 0) _application.Selection.SetSelectedObjects(ids.ToArray());
         }
-        catch { /* подсветка не должна ронять UI */ }
+        catch (Exception ex) { UiLog.Error("подсветка группы", ex); }
     }
 
     public ApplyReport ApplyChanges(IReadOnlyList<ModelChange> approvedChanges)

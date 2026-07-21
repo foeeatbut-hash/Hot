@@ -98,6 +98,7 @@ public sealed class Plugin : Renga.IPlugin
                 return;
             }
 
+            UiLog.Write("renga", "Нажата кнопка плагина на панели Renga.");
             // Одно окно на сессию: повторное нажатие кнопки — просто активирует существующее.
             // Модель НЕ перечитываем автоматически (крупные проекты читаются долго): загрузку
             // запускает сам инженер кнопкой в окне.
@@ -128,6 +129,7 @@ public sealed class Plugin : Renga.IPlugin
         }
         catch (Exception ex)
         {
+            UiLog.Error("запуск окна плагина", ex);
             Log("ОШИБКА RengaHeat:\r\n" + ex);
             try
             {
