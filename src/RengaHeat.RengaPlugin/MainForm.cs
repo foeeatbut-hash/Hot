@@ -41,7 +41,7 @@ public sealed class MainForm : Form
 
     // Видимый штамп версии плагина. Увеличивайте при каждом изменении UI — по нему сразу
     // видно в заголовке окна, свежая DLL загружена или старая.
-    private const string Build = "сборка 20";
+    private const string Build = "сборка 21";
 
     private readonly Font _ui = new("Segoe UI", 9f);
     private readonly Font _uiBold = new("Segoe UI", 9f, FontStyle.Bold);
@@ -290,13 +290,8 @@ public sealed class MainForm : Form
 
         root.Controls.Add(BuildNav(), 0, 1);
 
-        // Контент — белая поверхность с тонкой рамкой слева (отделяет от навигации).
+        // Контент — белая поверхность; левую грань рисует панель навигации (без задвоения линии).
         var contentHost = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg };
-        contentHost.Paint += (_, e) =>
-        {
-            using var pen = new Pen(BorderColor);
-            e.Graphics.DrawLine(pen, 0, 0, 0, contentHost.Height);   // левая грань
-        };
         contentHost.Controls.Add(_content);
         root.Controls.Add(contentHost, 1, 1);
 
@@ -448,11 +443,16 @@ public sealed class MainForm : Form
             ForeColor = TextMuted, TextAlign = ContentAlignment.MiddleCenter, BackColor = Color.Transparent,
             UseCompatibleTextRendering = false,
         };
+        // Короткая подпись для длинных имён (идентификатор раздела остаётся полным — item.Name).
+        var display = item.Name == "Предпросмотр изменений" ? "Предпросмотр"
+            : item.Name == "Проверка модели" ? "Проверка"
+            : item.Name;
         var text = new Label
         {
-            Text = item.Name, Font = _navFont, Dock = DockStyle.Fill,
+            Text = display, Font = _navFont, Dock = DockStyle.Fill, AutoEllipsis = true,
             ForeColor = TextDark, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent,
         };
+        if (display != item.Name) _tip.SetToolTip(text, item.Name);
 
         var selected = false;
         var hover = false;
@@ -1771,11 +1771,11 @@ public sealed class MainForm : Form
             using var pen = new Pen(BorderColor);
             g.FillPath(fill, path);
             g.DrawPath(pen, path);
-            using var dot = new SolidBrush(Accent);
-            g.FillEllipse(dot, 18, 19, 7, 7);   // акцентная точка у заголовка
+            using var bar = new SolidBrush(Accent);
+            g.FillRectangle(bar, 0, 14, 3, 18);   // короткая акцентная грань у заголовка
         };
         var flow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = Color.Transparent };
-        flow.Controls.Add(new Label { Text = title, AutoSize = true, Font = _uiBold, ForeColor = TextDark, Margin = new Padding(14, 0, 0, 6), BackColor = Color.Transparent });
+        flow.Controls.Add(new Label { Text = title, AutoSize = true, Font = _uiBold, ForeColor = TextDark, Margin = new Padding(2, 0, 0, 7), BackColor = Color.Transparent });
         flow.Controls.Add(new Label { Text = body, AutoSize = true, Font = _ui, ForeColor = TextDark, MaximumSize = new Size(760, 0), BackColor = Color.Transparent });
         card.Controls.Add(flow);
         return card;
