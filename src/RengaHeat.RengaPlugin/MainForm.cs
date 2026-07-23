@@ -19,26 +19,40 @@ namespace RengaHeat.RengaPlugin;
 /// </summary>
 public sealed class MainForm : Form
 {
-    // Нативная светлая палитра Renga (Qt-стиль): системный серый фон, белые списки/таблицы,
-    // тонкие серые рамки, стандартное синее выделение.
-    private static readonly Color NavBg = SystemColors.Control;        // тулбар, статус-бар, фон окна
-    private static readonly Color PanelBg = Color.White;               // контент, списки, таблицы
-    private static readonly Color BorderColor = Color.FromArgb(0xAB, 0xAB, 0xAB);
-    private static readonly Color TextDark = SystemColors.ControlText;
-    private static readonly Color TextMuted = Color.FromArgb(0x60, 0x60, 0x60);
-    private static readonly Color SelBg = Color.FromArgb(0xCC, 0xE4, 0xF7);   // классическое выделение Windows
-    private static readonly Color ToolHover = Color.FromArgb(0xE0, 0xE6, 0xEE);
+    // Современная светлая палитра: мягкий сине-серый фон-подложка, белые поверхности-карточки,
+    // тонкие деликатные рамки и единый синий акцент. Имена сохранены — используются по всему файлу.
+    private static readonly Color NavBg = Color.FromArgb(0xEE, 0xF1, 0xF6);       // фон-подложка окна/шапки
+    private static readonly Color PanelBg = Color.White;                          // поверхности: контент, карточки, таблицы
+    private static readonly Color SurfaceAlt = Color.FromArgb(0xF6, 0xF8, 0xFB);  // фон панели навигации
+    private static readonly Color BorderColor = Color.FromArgb(0xDD, 0xE3, 0xEB); // деликатная рамка
+    private static readonly Color BorderStrong = Color.FromArgb(0xC9, 0xD2, 0xDE);
+    private static readonly Color TextDark = Color.FromArgb(0x1E, 0x2A, 0x38);
+    private static readonly Color TextMuted = Color.FromArgb(0x6B, 0x76, 0x84);
+    private static readonly Color Accent = Color.FromArgb(0x2C, 0x6B, 0xED);      // основной акцент (синий)
+    private static readonly Color AccentDark = Color.FromArgb(0x1E, 0x54, 0xC8);
+    private static readonly Color AccentSoft = Color.FromArgb(0xE7, 0xEF, 0xFD);  // подсветка выбора/выделения
+    private static readonly Color SelBg = Color.FromArgb(0xE4, 0xEE, 0xFC);       // выделение строки таблицы
+    private static readonly Color ToolHover = Color.FromArgb(0xE7, 0xED, 0xF6);
+    private static readonly Color SoftFill = Color.FromArgb(0xEC, 0xF1, 0xF8);    // вторичные кнопки
+    private static readonly Color SoftFillHover = Color.FromArgb(0xDF, 0xE7, 0xF2);
+    private static readonly Color Success = Color.FromArgb(0x15, 0x80, 0x3D);
+    private static readonly Color Warn = Color.FromArgb(0xB4, 0x53, 0x09);
+    private static readonly Color Danger = Color.FromArgb(0xD0, 0x2B, 0x2B);
 
     // Видимый штамп версии плагина. Увеличивайте при каждом изменении UI — по нему сразу
     // видно в заголовке окна, свежая DLL загружена или старая.
-    private const string Build = "сборка 19";
+    private const string Build = "сборка 20";
 
     private readonly Font _ui = new("Segoe UI", 9f);
     private readonly Font _uiBold = new("Segoe UI", 9f, FontStyle.Bold);
-    private readonly Font _h1 = new("Segoe UI", 10.5f, FontStyle.Bold);
-    // Segoe MDL2 Assets — системный шрифт значков Windows (10/11); даёт компактные векторные
-    // иконки тулбара без подписей, как «+ / копия / карандаш / крестик» в диалогах Renga.
+    private readonly Font _uiSmall = new("Segoe UI", 8.25f);
+    private readonly Font _h1 = new("Segoe UI Semibold", 12f, FontStyle.Bold);
+    private readonly Font _brandFont = new("Segoe UI Semibold", 12.5f, FontStyle.Bold);
+    private readonly Font _navFont = new("Segoe UI", 9.75f);
+    private readonly Font _groupFont = new("Segoe UI", 7.75f, FontStyle.Bold);
+    // Segoe MDL2 Assets — системный шрифт векторных значков Windows 10/11.
     private readonly Font _iconFont = new("Segoe MDL2 Assets", 13f);
+    private readonly Font _navIconFont = new("Segoe MDL2 Assets", 12f);
     private readonly ToolTip _tip = new() { AutoPopDelay = 6000, InitialDelay = 350, ReshowDelay = 100 };
 
     private readonly PluginContext _ctx;
@@ -50,16 +64,41 @@ public sealed class MainForm : Form
     private static readonly string[] DefaultLoadNames =
         { "Q_расч", "Qрасч", "Q", "Тепловая мощность", "Мощность 80/60", "Теплопотери" };
 
-    private readonly ListBox _nav = new();
     private readonly Panel _content = new() { Dock = DockStyle.Fill, BackColor = PanelBg };
-    private readonly Label _status = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(14, 0, 0, 0) };
+    private readonly Label _status = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(16, 0, 0, 0) };
+    private Label? _readyChip;
 
-    private static readonly string[] Sections =
+    // Кастомная навигация: строки с иконкой, сгруппированные по этапам работы. Раздел активен
+    // по имени (_currentSection); ListBox заменён на управляемые панели ради иконок, групп и акцента.
+    private string _currentSection = "Обзор";
+    private readonly Dictionary<string, Action<bool>> _navApply = new();
+
+    /// <summary>Описание раздела: группа, имя, значок (Segoe MDL2), подпись под заголовком.</summary>
+    private readonly record struct NavItem(string Group, string Name, string Icon, string Subtitle);
+
+    // Значки заданы \uXXXX (а не вставкой PUA-символа) — так они видимы в исходнике и не ломают правки.
+    private static readonly NavItem[] NavModel =
     {
-        "Обзор", "Исходные", "Уровни", "Карта", "Классификатор", "Сопоставление",
-        "Проверка модели", "Расчёт", "Балансировка", "Предпросмотр изменений",
-        "Отчёты и экспорт", "Журнал", "О программе",
+        new("Модель",     "Обзор",                  "", "Сводка по загруженной модели"),
+        new("Модель",     "Уровни",                 "", "Фильтр расчёта по этажам"),
+        new("Модель",     "Карта",                  "", "Подсветка ролей и переназначение"),
+        new("Настройка",  "Исходные",               "", "Параметры расчёта и лимиты"),
+        new("Настройка",  "Классификатор",          "", "Роли объектов по типам"),
+        new("Настройка",  "Сопоставление",          "", "Откуда брать значения расчёта"),
+        new("Расчёт",     "Проверка модели",        "", "Что мешает расчёту и как исправить"),
+        new("Расчёт",     "Расчёт",                 "", "Расходы, потери, диаметры"),
+        new("Расчёт",     "Балансировка",           "", "Клапаны и преднастройки"),
+        new("Результат",  "Предпросмотр изменений", "", "Что записать обратно в модель"),
+        new("Результат",  "Отчёты и экспорт",       "", "Отчёты, ведомости, пакет сверки"),
+        new("Сервис",     "Журнал",                 "", "Протокол всех действий и ошибок"),
+        new("Сервис",     "О программе",            "", "Версия, возможности, разработчик"),
     };
+
+    private static NavItem MetaOf(string section)
+    {
+        foreach (var m in NavModel) if (m.Name == section) return m;
+        return new NavItem("", section, "", "");
+    }
 
     // Глобальные обработчики ставятся один раз на процесс: ни одна необработанная ошибка
     // (UI-поток, фоновые задачи, домен) не должна пройти мимо журнала.
@@ -98,7 +137,7 @@ public sealed class MainForm : Form
         try { Icon = SystemIcons.Application; } catch { /* без иконки — не критично */ }
 
         BuildLayout();
-        _nav.SelectedIndex = 0;
+        NavigateTo("Обзор");
         // Модель НЕ читаем при открытии: на больших проектах это долго. Инженер сам выбирает,
         // загрузить всё или только выделенное (изолированные уровни), кнопками на панели.
         UiLog.Write("окно", $"Открыто окно плагина ({Build}). Настройки: {SessionConfig.DefaultPath}; " +
@@ -153,7 +192,7 @@ public sealed class MainForm : Form
         }
         catch (Exception ex) { UiLog.Error("авто-расчёт", ex); /* инженер запустит вручную кнопкой ▶ */ }
         finally { Cursor = Cursors.Default; }
-        if (_nav.SelectedItem is string s) ShowSection(s);
+        ShowSection(_currentSection);
     }
 
     /// <summary>Краткий итог расчёта для журнала: источники, контуры, замечания, готовность.</summary>
@@ -229,7 +268,7 @@ public sealed class MainForm : Form
                                   $"связей {_model.Connections.Count}, уровней в сводке {_model.LevelSummary().Count}.");
         UpdateStatus();
         AutoCalculate();
-        if (_nav.SelectedItem is string s) ShowSection(s);
+        ShowSection(_currentSection);
     }
 
     /// <summary>Рабочая модель: исходная, отфильтрованная по выбранным уровням (раздел «Уровни»).</summary>
@@ -239,121 +278,330 @@ public sealed class MainForm : Form
     private void BuildLayout()
     {
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3, BackColor = NavBg };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 208));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));   // тулбар
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));   // навигация + контент
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));   // нижняя панель
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 236));   // навигация
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));    // контент
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));          // шапка-аппбар
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));          // навигация + контент
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));          // статус-бар
 
-        // Тулбар — компактные квадратные значки без подписей (подсказка по наведению),
-        // как ряд «+ / копия / карандаш / крестик» в диалогах Renga.
-        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = NavBg, Padding = new Padding(4, 4, 0, 0), WrapContents = false };
-        toolbar.Paint += (_, e) => e.Graphics.DrawLine(new Pen(BorderColor), 0, toolbar.Height - 1, toolbar.Width, toolbar.Height - 1);
-        var loadSelBtn = IconToolButton("", "Загрузить выделенное в Renga (изолированные уровни)");   // Filter
-        loadSelBtn.Click += (_, _) => { UiLog.Write("клик", "Кнопка «Загрузить выделенное»."); LoadModel(selectedOnly: true); };
-        var loadAllBtn = IconToolButton("", "Загрузить всю модель (может быть долго)");              // Download
-        loadAllBtn.Click += (_, _) => { UiLog.Write("клик", "Кнопка «Загрузить всю модель»."); LoadModel(selectedOnly: false); };
-        var runBtn = IconToolButton("", "Рассчитать");                                                // Play
-        runBtn.Click += (_, _) => { UiLog.Write("клик", "Кнопка «Рассчитать» (тулбар)."); RunCalculation(); };
-        toolbar.Controls.Add(loadSelBtn);
-        toolbar.Controls.Add(loadAllBtn);
-        toolbar.Controls.Add(Separator());
-        toolbar.Controls.Add(runBtn);
-        root.Controls.Add(toolbar, 0, 0);
-        root.SetColumnSpan(toolbar, 2);
+        var header = BuildHeader();
+        root.Controls.Add(header, 0, 0);
+        root.SetColumnSpan(header, 2);
 
-        // Навигация — нативный список в белой рамке-инсете (как список стилей в диалогах Renga)
-        _nav.Dock = DockStyle.Fill;
-        _nav.BorderStyle = BorderStyle.None;
-        _nav.BackColor = PanelBg;
-        _nav.Font = _ui;
-        _nav.ItemHeight = 24;
-        _nav.IntegralHeight = false;
-        foreach (var s in Sections) _nav.Items.Add(s);
-        _nav.SelectedIndexChanged += (_, _) =>
+        root.Controls.Add(BuildNav(), 0, 1);
+
+        // Контент — белая поверхность с тонкой рамкой слева (отделяет от навигации).
+        var contentHost = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg };
+        contentHost.Paint += (_, e) =>
         {
-            if (_nav.SelectedItem is not string s) return;
-            UiLog.Write("раздел", $"Открыт раздел «{s}».");
-            ShowSection(s);
+            using var pen = new Pen(BorderColor);
+            e.Graphics.DrawLine(pen, 0, 0, 0, contentHost.Height);   // левая грань
         };
-        var leftPanel = new Panel { Dock = DockStyle.Fill, BackColor = NavBg };
-        leftPanel.Controls.Add(Framed(_nav, new Padding(8, 0, 6, 8)));
-        leftPanel.Controls.Add(new Label
-        {
-            Text = "Разделы", Dock = DockStyle.Top, Height = 24, Font = _uiBold, ForeColor = TextDark,
-            TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(9, 5, 0, 0), BackColor = NavBg,
-        });
-        root.Controls.Add(leftPanel, 0, 1);
+        contentHost.Controls.Add(_content);
+        root.Controls.Add(contentHost, 1, 1);
 
-        // Контент — та же белая рамка-инсет на сером фоне (область просмотра справа в Renga)
-        root.Controls.Add(Framed(_content, new Padding(0, 8, 8, 8)), 1, 1);
-
-        // Нижняя панель: статус слева, кнопка «Закрыть» справа (как OK/Отмена в Renga)
-        var bottom = new Panel { Dock = DockStyle.Fill, BackColor = NavBg };
-        bottom.Paint += (_, e) => e.Graphics.DrawLine(new Pen(BorderColor), 0, 0, bottom.Width, 0);
-        _status.Font = _ui;
-        _status.ForeColor = TextMuted;
-        var closeBtn = new Button { Text = "Закрыть", Width = 96, Height = 26, FlatStyle = FlatStyle.System, Font = _ui, Dock = DockStyle.Right };
-        closeBtn.Click += (_, _) => Close();
-        var closeHost = new Panel { Dock = DockStyle.Right, Width = 112, Padding = new Padding(8, 7, 8, 7), BackColor = NavBg };
-        closeHost.Controls.Add(closeBtn);
-        bottom.Controls.Add(closeHost);
-        bottom.Controls.Add(_status);
-        root.Controls.Add(bottom, 0, 2);
-        root.SetColumnSpan(bottom, 2);
+        var status = BuildStatusBar();
+        root.Controls.Add(status, 0, 2);
+        root.SetColumnSpan(status, 2);
 
         Controls.Add(root);
     }
 
-    /// <summary>Обернуть контрол в белую панель с тонкой серой рамкой на сером фоне (инсет Renga).</summary>
+    /// <summary>Верхняя панель-аппбар: логотип-плитка, название и кнопки действий справа.</summary>
+    private Control BuildHeader()
+    {
+        var header = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg };
+        header.Paint += (_, e) =>
+        {
+            using var pen = new Pen(BorderColor);
+            e.Graphics.DrawLine(pen, 0, header.Height - 1, header.Width, header.Height - 1);
+        };
+
+        // Плитка-логотип с акцентной заливкой и значком.
+        var logo = new Panel { Dock = DockStyle.Left, Width = 60, BackColor = PanelBg };
+        logo.Paint += (_, e) =>
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            var rect = new Rectangle(14, 13, 34, 34);
+            using var path = RoundedRect(rect, 9);
+            using var br = new System.Drawing.Drawing2D.LinearGradientBrush(rect, Accent, AccentDark, 60f);
+            g.FillPath(br, path);
+            using var f = new Font("Segoe MDL2 Assets", 15f);
+            TextRenderer.DrawText(g, "", f, rect, Color.White,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        };
+
+        var titleWrap = new Panel { Dock = DockStyle.Left, Width = 260, BackColor = PanelBg, Padding = new Padding(0, 10, 0, 0) };
+        titleWrap.Controls.Add(new Label
+        {
+            Text = $"Гидравлический расчёт отопления · {Build}", Dock = DockStyle.Top, Height = 18,
+            Font = _uiSmall, ForeColor = TextMuted, TextAlign = ContentAlignment.TopLeft,
+            Padding = new Padding(3, 1, 0, 0), BackColor = PanelBg,
+        });
+        titleWrap.Controls.Add(new Label
+        {
+            Text = "RengaHeat", Dock = DockStyle.Top, Height = 24, Font = _brandFont, ForeColor = TextDark,
+            TextAlign = ContentAlignment.BottomLeft, Padding = new Padding(2, 0, 0, 0), BackColor = PanelBg,
+        });
+
+        // Кнопки действий справа (значок + подпись). Первичная — акцентная «Рассчитать».
+        var actions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Right, FlowDirection = FlowDirection.RightToLeft, WrapContents = false,
+            BackColor = PanelBg, Padding = new Padding(0, 13, 14, 0), AutoSize = true,
+        };
+        var runBtn = HeaderButton("", "Рассчитать", primary: true);
+        runBtn.Click += (_, _) => { UiLog.Write("клик", "Кнопка «Рассчитать» (шапка)."); RunCalculation(); };
+        var loadAllBtn = HeaderButton("", "Вся модель", primary: false);
+        loadAllBtn.Click += (_, _) => { UiLog.Write("клик", "Кнопка «Загрузить всю модель»."); LoadModel(selectedOnly: false); };
+        var loadSelBtn = HeaderButton("", "Выделенное", primary: false);
+        loadSelBtn.Click += (_, _) => { UiLog.Write("клик", "Кнопка «Загрузить выделенное»."); LoadModel(selectedOnly: true); };
+        _tip.SetToolTip(loadSelBtn, "Прочитать только выделенное в Renga (изолированные уровни)");
+        _tip.SetToolTip(loadAllBtn, "Прочитать всю модель проекта");
+        _tip.SetToolTip(runBtn, "Выполнить гидравлический расчёт");
+        actions.Controls.Add(runBtn);
+        actions.Controls.Add(loadAllBtn);
+        actions.Controls.Add(loadSelBtn);
+
+        header.Controls.Add(actions);
+        header.Controls.Add(titleWrap);
+        header.Controls.Add(logo);
+        return header;
+    }
+
+    /// <summary>Кнопка действия в шапке: значок + подпись, скруглённая; primary — акцентная заливка.</summary>
+    private Button HeaderButton(string glyph, string text, bool primary)
+    {
+        var b = new Button
+        {
+            Text = "      " + text, Font = _uiBold, Height = 34, AutoSize = false, Width = 134,
+            FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand, Margin = new Padding(8, 0, 0, 0),
+            TextAlign = ContentAlignment.MiddleLeft, UseCompatibleTextRendering = false, TabStop = false,
+        };
+        b.FlatAppearance.BorderSize = 0;
+        if (primary)
+        {
+            b.BackColor = Accent; b.ForeColor = Color.White;
+            b.FlatAppearance.MouseOverBackColor = AccentDark;
+            b.FlatAppearance.MouseDownBackColor = AccentDark;
+        }
+        else
+        {
+            b.BackColor = SoftFill; b.ForeColor = TextDark;
+            b.FlatAppearance.MouseOverBackColor = SoftFillHover;
+            b.FlatAppearance.MouseDownBackColor = BorderStrong;
+        }
+        // Значок рисуем поверх, слева, шрифтом Segoe MDL2 — значок и текст в одной кнопке.
+        b.Paint += (_, e) =>
+        {
+            var col = primary ? Color.White : Accent;
+            var rect = new Rectangle(14, 0, 20, b.Height);
+            TextRenderer.DrawText(e.Graphics, glyph, _iconFont, rect, col,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        };
+        Round(b, 8);
+        return b;
+    }
+
+    /// <summary>Панель навигации: группы этапов и строки-разделы со значками и акцентом выбора.</summary>
+    private Control BuildNav()
+    {
+        var host = new Panel { Dock = DockStyle.Fill, BackColor = SurfaceAlt, AutoScroll = true };
+        host.Paint += (_, e) =>
+        {
+            using var pen = new Pen(BorderColor);
+            e.Graphics.DrawLine(pen, host.Width - 1, 0, host.Width - 1, host.Height);   // правая грань
+        };
+        var stack = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top, ColumnCount = 1, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, BackColor = SurfaceAlt, Padding = new Padding(0, 6, 0, 10),
+        };
+        stack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        string? lastGroup = null;
+        foreach (var item in NavModel)
+        {
+            if (item.Group != lastGroup)
+            {
+                lastGroup = item.Group;
+                stack.Controls.Add(new Label
+                {
+                    Text = item.Group.ToUpperInvariant(), Dock = DockStyle.Top, Height = 26,
+                    Font = _groupFont, ForeColor = TextMuted, BackColor = SurfaceAlt,
+                    TextAlign = ContentAlignment.BottomLeft, Padding = new Padding(18, 0, 0, 4),
+                });
+            }
+            stack.Controls.Add(BuildNavRow(item));
+        }
+        host.Controls.Add(stack);
+        return host;
+    }
+
+    private Control BuildNavRow(NavItem item)
+    {
+        var row = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = SurfaceAlt, Cursor = Cursors.Hand };
+        var icon = new Label
+        {
+            Text = item.Icon, Font = _navIconFont, Dock = DockStyle.Left, Width = 42,
+            ForeColor = TextMuted, TextAlign = ContentAlignment.MiddleCenter, BackColor = Color.Transparent,
+            UseCompatibleTextRendering = false,
+        };
+        var text = new Label
+        {
+            Text = item.Name, Font = _navFont, Dock = DockStyle.Fill,
+            ForeColor = TextDark, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent,
+        };
+
+        var selected = false;
+        var hover = false;
+        void Style()
+        {
+            row.BackColor = selected ? AccentSoft : hover ? ToolHover : SurfaceAlt;
+            text.ForeColor = selected ? AccentDark : TextDark;
+            text.Font = selected ? _uiBold : _navFont;
+            icon.ForeColor = selected ? Accent : TextMuted;
+            row.Invalidate();
+        }
+        row.Paint += (_, e) =>
+        {
+            if (!selected) return;
+            using var br = new SolidBrush(Accent);
+            e.Graphics.FillRectangle(br, 0, 6, 3, row.Height - 12);   // акцентная полоса слева
+        };
+
+        void OnEnter(object? s, EventArgs e) { if (!selected) { hover = true; Style(); } }
+        void OnLeave(object? s, EventArgs e) { hover = false; Style(); }
+        void OnClick(object? s, EventArgs e) => NavigateTo(item.Name);
+        foreach (Control c in new Control[] { row, icon, text })
+        {
+            c.MouseEnter += OnEnter;
+            c.MouseLeave += OnLeave;
+            c.Click += OnClick;
+        }
+
+        row.Controls.Add(text);
+        row.Controls.Add(icon);
+        _navApply[item.Name] = sel => { selected = sel; hover = false; Style(); };
+        return row;
+    }
+
+    /// <summary>Переключиться на раздел: подсветить строку навигации, записать в журнал, показать содержимое.</summary>
+    private void NavigateTo(string section)
+    {
+        _currentSection = section;
+        foreach (var (name, apply) in _navApply) apply(name == section);
+        UiLog.Write("раздел", $"Открыт раздел «{section}».");
+        ShowSection(section);
+    }
+
+    /// <summary>Нижний статус-бар: индикатор готовности слева, сводка модели, кнопка «Закрыть».</summary>
+    private Control BuildStatusBar()
+    {
+        var bottom = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg };
+        bottom.Paint += (_, e) =>
+        {
+            using var pen = new Pen(BorderColor);
+            e.Graphics.DrawLine(pen, 0, 0, bottom.Width, 0);
+        };
+        _status.Font = _ui;
+        _status.ForeColor = TextMuted;
+
+        var closeBtn = new Button
+        {
+            Text = "Закрыть", Width = 96, Height = 26, FlatStyle = FlatStyle.Flat, Font = _ui,
+            Dock = DockStyle.Right, BackColor = SoftFill, ForeColor = TextDark, Cursor = Cursors.Hand, TabStop = false,
+        };
+        closeBtn.FlatAppearance.BorderSize = 0;
+        closeBtn.FlatAppearance.MouseOverBackColor = SoftFillHover;
+        Round(closeBtn, 6);
+        closeBtn.Click += (_, _) => Close();
+        var closeHost = new Panel { Dock = DockStyle.Right, Width = 116, Padding = new Padding(8, 6, 12, 6), BackColor = PanelBg };
+        closeHost.Controls.Add(closeBtn);
+
+        _readyChip = new Label
+        {
+            Dock = DockStyle.Left, Width = 176, Font = _uiBold, TextAlign = ContentAlignment.MiddleCenter,
+            ForeColor = TextMuted, BackColor = PanelBg, Text = "● расчёт не выполнялся",
+        };
+
+        // Порядок докинга: растягивающийся _status добавляем первым (index 0 — раскладывается
+        // последним и занимает остаток), затем пристыкованные к краям индикатор и кнопка.
+        bottom.Controls.Add(_status);
+        bottom.Controls.Add(_readyChip);
+        bottom.Controls.Add(closeHost);
+        return bottom;
+    }
+
+    /// <summary>Обернуть контрол в белую панель с тонкой рамкой на фоне-подложке.</summary>
     private static Panel Framed(Control inner, Padding outerMargin)
     {
         inner.Dock = DockStyle.Fill;
         var box = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg, Padding = new Padding(1) };
         box.Paint += (_, e) => e.Graphics.DrawRectangle(new Pen(BorderColor), 0, 0, box.Width - 1, box.Height - 1);
         box.Controls.Add(inner);
-        var host = new Panel { Dock = DockStyle.Fill, BackColor = NavBg, Padding = outerMargin };
+        var host = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg, Padding = outerMargin };
         host.Controls.Add(box);
         return host;
     }
 
-    /// <summary>
-    /// Компактная квадратная кнопка-значок без подписи (значок Segoe MDL2 Assets, подсказка по
-    /// наведению) — как «+ / копия / карандаш / крестик» в тулбарах диалогов Renga. TabStop
-    /// выключен, чтобы после клика не оставался рамка-фокус — тулбарные значки его не показывают.
-    /// </summary>
-    private Button IconToolButton(string glyph, string tooltip)
+    /// <summary>Скруглённый прямоугольник (для кнопок и карточек).</summary>
+    private static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle r, int radius)
     {
-        var b = new Button
-        {
-            Text = glyph, Font = _iconFont, Width = 32, Height = 30,
-            FlatStyle = FlatStyle.Flat, BackColor = NavBg, ForeColor = TextDark,
-            TextAlign = ContentAlignment.MiddleCenter, Margin = new Padding(0), Cursor = Cursors.Hand,
-            TabStop = false, UseCompatibleTextRendering = false,
-        };
-        b.FlatAppearance.BorderSize = 0;
-        b.FlatAppearance.MouseOverBackColor = ToolHover;
-        b.FlatAppearance.MouseDownBackColor = Color.FromArgb(0xCC, 0xDA, 0xE8);
-        _tip.SetToolTip(b, tooltip);
-        return b;
+        var d = radius * 2;
+        var path = new System.Drawing.Drawing2D.GraphicsPath();
+        if (d <= 0 || d > r.Width || d > r.Height) { path.AddRectangle(r); return path; }
+        path.AddArc(r.X, r.Y, d, d, 180, 90);
+        path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
     }
 
-    /// <summary>Тонкий вертикальный разделитель между группами значков тулбара.</summary>
-    private Panel Separator() => new()
+    /// <summary>Скруглить углы контрола обрезкой региона (пересчитывается при изменении размера).</summary>
+    private static void Round(Control c, int radius)
     {
-        Width = 1, Height = 20, Margin = new Padding(4, 5, 4, 5), BackColor = BorderColor,
-    };
+        void Apply()
+        {
+            if (c.Width <= 0 || c.Height <= 0) return;
+            using var path = RoundedRect(new Rectangle(0, 0, c.Width, c.Height), radius);
+            c.Region = new Region(path);
+        }
+        c.Resize += (_, _) => Apply();
+        Apply();
+    }
 
     private void UpdateStatus()
     {
         var p = EffectiveProfile();
-        var over = _config.Overrides.Any ? " (изменён)" : "";
+        var over = _config.Overrides.Any ? " · изменён" : "";
         var work = WorkingModel();
         var lvl = _config.SelectedLevels.Count > 0 ? $" · уровней: {_config.SelectedLevels.Count}" : "";
-        var model = work is null ? "модель не загружена" : $"объектов: {work.Objects.Count}, связей: {work.Connections.Count}{lvl}";
-        var ready = _outcome is null ? "расчёт не выполнялся"
-            : (_outcome.IsReady ? "✓ готово" : "⚠ есть замечания");
-        _status.Text = $"Профиль: {p.Name}{over} · график {p.HeatingSchedule}     |     {model}     |     {ready}";
+        var model = work is null ? "модель не загружена"
+            : $"объектов: {work.Objects.Count} · связей: {work.Connections.Count}{lvl}";
+        _status.Text = $"Профиль: {p.Name}{over}  ·  график {p.HeatingSchedule}      {model}";
+
+        if (_readyChip is not null)
+        {
+            if (_outcome is null)
+            {
+                _readyChip.Text = "●  расчёт не выполнялся";
+                _readyChip.ForeColor = TextMuted;
+            }
+            else if (_outcome.IsReady)
+            {
+                _readyChip.Text = "●  готово";
+                _readyChip.ForeColor = Success;
+            }
+            else
+            {
+                var errors = _outcome.AllFindings.Count(f => f.Status == FindingStatus.Error);
+                _readyChip.Text = errors > 0 ? $"●  ошибок: {errors}" : "●  есть замечания";
+                _readyChip.ForeColor = errors > 0 ? Danger : Warn;
+            }
+        }
     }
 
     private void ShowSection(string section)
@@ -371,8 +619,9 @@ public sealed class MainForm : Form
             body = Info($"Не удалось построить раздел: {ex.Message}\r\n\r\nПодробности (стек) — в разделе «Журнал».");
         }
         body.Dock = DockStyle.Fill;
+        body.BackColor = PanelBg;   // единый белый фон содержимого раздела
 
-        var inner = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg, Padding = new Padding(20, 14, 20, 16), AutoScroll = true };
+        var inner = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg, Padding = new Padding(26, 18, 26, 20), AutoScroll = true };
         inner.Controls.Add(body);
 
         var host = new Panel { Dock = DockStyle.Fill, BackColor = PanelBg };
@@ -402,9 +651,35 @@ public sealed class MainForm : Form
 
     private Panel SectionHeader(string section)
     {
-        var panel = new Panel { Dock = DockStyle.Top, Height = 34, BackColor = PanelBg, Padding = new Padding(16, 0, 16, 0) };
-        panel.Paint += (_, e) => e.Graphics.DrawLine(new Pen(BorderColor), 0, panel.Height - 1, panel.Width, panel.Height - 1);
-        panel.Controls.Add(new Label { Text = section, Dock = DockStyle.Fill, Font = _h1, ForeColor = TextDark, TextAlign = ContentAlignment.MiddleLeft });
+        var meta = MetaOf(section);
+        var panel = new Panel { Dock = DockStyle.Top, Height = 62, BackColor = PanelBg, Padding = new Padding(24, 0, 24, 0) };
+        panel.Paint += (_, e) =>
+        {
+            using var pen = new Pen(BorderColor);
+            e.Graphics.DrawLine(pen, 0, panel.Height - 1, panel.Width, panel.Height - 1);
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            var rect = new Rectangle(24, 15, 32, 32);
+            using var path = RoundedRect(rect, 8);
+            using var br = new SolidBrush(AccentSoft);
+            g.FillPath(br, path);
+            TextRenderer.DrawText(g, meta.Icon, _iconFont, rect, Accent,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        };
+        var title = new Label
+        {
+            Text = section, Dock = DockStyle.Top, Height = 26, Font = _h1, ForeColor = TextDark,
+            TextAlign = ContentAlignment.BottomLeft, Padding = new Padding(46, 0, 0, 0), BackColor = Color.Transparent,
+        };
+        var sub = new Label
+        {
+            Text = meta.Subtitle, Dock = DockStyle.Top, Height = 18, Font = _uiSmall, ForeColor = TextMuted,
+            TextAlign = ContentAlignment.TopLeft, Padding = new Padding(47, 1, 0, 0), BackColor = Color.Transparent,
+        };
+        var wrap = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Padding = new Padding(0, 10, 0, 0) };
+        wrap.Controls.Add(sub);
+        wrap.Controls.Add(title);
+        panel.Controls.Add(wrap);
         return panel;
     }
 
@@ -421,8 +696,8 @@ public sealed class MainForm : Form
                 "Для расчёта только нужной части (рекомендуется):\r\n" +
                 "   1) в Renga изолируйте нужные уровни;\r\n" +
                 "   2) выделите объекты (Ctrl+A выделяет видимые);\r\n" +
-                "   3) нажмите на панели сверху «Загрузить выделенное» (значок фильтра).\r\n\r\n" +
-                "Либо «Загрузить всю модель» (значок загрузки) — читается весь проект, может быть долго."));
+                "   3) нажмите в шапке кнопку «Выделенное».\r\n\r\n" +
+                "Либо «Вся модель» — читается весь проект, может быть долго."));
             return panel;
         }
 
@@ -475,8 +750,7 @@ public sealed class MainForm : Form
             UiLog.Write("расчёт", $"Расчёт завершён за {sw.Elapsed.TotalSeconds:0.0} с. {OutcomeSummary(_outcome)}");
             LogOutcomeProblems(_outcome);
             UpdateStatus();
-            _nav.SelectedItem = "Расчёт";
-            ShowSection("Расчёт");
+            NavigateTo("Расчёт");
         }
         catch (Exception ex)
         {
@@ -500,7 +774,7 @@ public sealed class MainForm : Form
         }
         catch (Exception ex) { Msg("Ошибка расчёта: " + ex.Message, MessageBoxIcon.Error); }
         finally { Cursor = Cursors.Default; }
-        if (_nav.SelectedItem is string s) ShowSection(s);
+        ShowSection(_currentSection);
     }
 
     /// <summary>Прогон сессии с учётом ручных назначений ролей из «Карты» (приоритет над авто).</summary>
@@ -785,7 +1059,7 @@ public sealed class MainForm : Form
     {
         if (_ctx.SelectManyInRenga is null) return Info("Карта работает только внутри Renga.");
         if (_model is null)
-            return Info("Сначала загрузите модель: значок фильтра (выделенное) или загрузки (вся модель) на панели.");
+            return Info("Сначала загрузите модель — кнопки «Выделенное» или «Вся модель» в шапке.");
         var work = WorkingModel();
         if (work is null) return Info("Модель не загружена.");
 
@@ -842,7 +1116,7 @@ public sealed class MainForm : Form
 
         if (_outcome is null)
         {
-            panel.Controls.Add(Info("Группы карты появятся после расчёта — нажмите ▶ на панели."));
+            panel.Controls.Add(Info("Группы карты появятся после расчёта — нажмите «Рассчитать» в шапке."));
             return panel;
         }
 
@@ -1100,7 +1374,7 @@ public sealed class MainForm : Form
 
     private Control BuildValidation()
     {
-        if (_outcome is null) return Info("Замечания появляются после расчёта. Нажмите ▶ на панели.");
+        if (_outcome is null) return Info("Замечания появляются после расчёта. Нажмите «Рассчитать» в шапке.");
 
         var all = _outcome.AllFindings.ToList();
         if (all.Count == 0) return Info("Замечаний нет — модель и расчёт в порядке.");
@@ -1431,18 +1705,37 @@ public sealed class MainForm : Form
 
     // ---------- Вспомогательное ----------
 
-    // Нативные кнопки Windows (как OK/Отмена в диалогах Renga).
-    private Button PrimaryButton(string text) => new()
+    // Акцентная первичная кнопка (заливка синим) — главное действие раздела.
+    private Button PrimaryButton(string text)
     {
-        Text = text, AutoSize = false, Height = 30, Width = 230, Margin = new Padding(0, 0, 8, 0),
-        Font = _ui, FlatStyle = FlatStyle.System, UseVisualStyleBackColor = true,
-    };
+        var b = new Button
+        {
+            Text = text, AutoSize = false, Height = 32, Width = 230, Margin = new Padding(0, 0, 8, 0),
+            Font = _uiBold, FlatStyle = FlatStyle.Flat, BackColor = Accent, ForeColor = Color.White,
+            Cursor = Cursors.Hand, UseCompatibleTextRendering = false, TabStop = false,
+        };
+        b.FlatAppearance.BorderSize = 0;
+        b.FlatAppearance.MouseOverBackColor = AccentDark;
+        b.FlatAppearance.MouseDownBackColor = AccentDark;
+        Round(b, 7);
+        return b;
+    }
 
-    private Button SecondaryButton(string text) => new()
+    // Вторичная кнопка — мягкая серо-синяя заливка без рамки.
+    private Button SecondaryButton(string text)
     {
-        Text = text, AutoSize = false, Height = 30, Width = 200, Margin = new Padding(0, 0, 8, 0),
-        Font = _ui, FlatStyle = FlatStyle.System, UseVisualStyleBackColor = true,
-    };
+        var b = new Button
+        {
+            Text = text, AutoSize = false, Height = 32, Width = 200, Margin = new Padding(0, 0, 8, 0),
+            Font = _ui, FlatStyle = FlatStyle.Flat, BackColor = SoftFill, ForeColor = TextDark,
+            Cursor = Cursors.Hand, UseCompatibleTextRendering = false, TabStop = false,
+        };
+        b.FlatAppearance.BorderSize = 0;
+        b.FlatAppearance.MouseOverBackColor = SoftFillHover;
+        b.FlatAppearance.MouseDownBackColor = BorderStrong;
+        Round(b, 7);
+        return b;
+    }
 
     private Button SaveButton(string text, string defaultName, string filter, Func<string> content)
     {
@@ -1466,11 +1759,24 @@ public sealed class MainForm : Form
 
     private Panel Card(string title, string body)
     {
-        var card = new Panel { AutoSize = true, BackColor = PanelBg, Margin = new Padding(0, 0, 0, 10), Padding = new Padding(12, 8, 12, 10) };
-        card.Paint += (_, e) => e.Graphics.DrawRectangle(new Pen(BorderColor), 0, 0, card.Width - 1, card.Height - 1);
-        var flow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
-        flow.Controls.Add(new Label { Text = title, AutoSize = true, Font = _uiBold, ForeColor = TextDark, Margin = new Padding(0, 0, 0, 4) });
-        flow.Controls.Add(new Label { Text = body, AutoSize = true, Font = _ui, ForeColor = TextDark, MaximumSize = new Size(720, 0) });
+        // Мягкая карточка со скруглёнными углами и акцентной точкой у заголовка.
+        var card = new Panel { AutoSize = true, BackColor = PanelBg, Margin = new Padding(0, 0, 0, 14), Padding = new Padding(18, 14, 18, 16) };
+        card.Paint += (_, e) =>
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            var r = new Rectangle(0, 0, card.Width - 1, card.Height - 1);
+            using var path = RoundedRect(r, 10);
+            using var fill = new SolidBrush(PanelBg);
+            using var pen = new Pen(BorderColor);
+            g.FillPath(fill, path);
+            g.DrawPath(pen, path);
+            using var dot = new SolidBrush(Accent);
+            g.FillEllipse(dot, 18, 19, 7, 7);   // акцентная точка у заголовка
+        };
+        var flow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = Color.Transparent };
+        flow.Controls.Add(new Label { Text = title, AutoSize = true, Font = _uiBold, ForeColor = TextDark, Margin = new Padding(14, 0, 0, 6), BackColor = Color.Transparent });
+        flow.Controls.Add(new Label { Text = body, AutoSize = true, Font = _ui, ForeColor = TextDark, MaximumSize = new Size(760, 0), BackColor = Color.Transparent });
         card.Controls.Add(flow);
         return card;
     }
@@ -1508,29 +1814,55 @@ public sealed class MainForm : Form
 
     private void StyleGrid(DataGridView grid)
     {
-        grid.BorderStyle = BorderStyle.FixedSingle;
+        grid.BorderStyle = BorderStyle.None;
         grid.BackgroundColor = PanelBg;
-        grid.GridColor = Color.FromArgb(0xD6, 0xD6, 0xD6);
-        grid.EnableHeadersVisualStyles = true;   // нативные серые заголовки в стиле Renga
+        grid.GridColor = Color.FromArgb(0xEC, 0xEF, 0xF3);
+        grid.EnableHeadersVisualStyles = false;   // собственный светлый заголовок
+        grid.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None;
         grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
-        grid.ColumnHeadersHeight = 26;
-        grid.ColumnHeadersDefaultCellStyle.Font = _ui;
-        grid.ColumnHeadersDefaultCellStyle.Padding = new Padding(4, 0, 4, 0);
+        grid.ColumnHeadersHeight = 32;
+        grid.ColumnHeadersDefaultCellStyle.Font = _uiBold;
+        grid.ColumnHeadersDefaultCellStyle.BackColor = SurfaceAlt;
+        grid.ColumnHeadersDefaultCellStyle.ForeColor = TextMuted;
+        grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = SurfaceAlt;
+        grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = TextMuted;
+        grid.ColumnHeadersDefaultCellStyle.Padding = new Padding(8, 0, 8, 0);
         grid.DefaultCellStyle.Font = _ui;
         grid.DefaultCellStyle.ForeColor = TextDark;
+        grid.DefaultCellStyle.BackColor = PanelBg;
         grid.DefaultCellStyle.SelectionBackColor = SelBg;
         grid.DefaultCellStyle.SelectionForeColor = TextDark;
-        grid.DefaultCellStyle.Padding = new Padding(4, 2, 4, 2);
+        grid.DefaultCellStyle.Padding = new Padding(8, 3, 8, 3);
+        grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(0xFA, 0xFB, 0xFD);   // «зебра»
         grid.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal;
+        grid.RowHeadersBorderStyle = DataGridViewHeaderBorderStyle.None;
         grid.AllowUserToResizeRows = false;
-        grid.RowTemplate.Height = 22;
+        grid.RowTemplate.Height = 26;
+        grid.BackColor = PanelBg;
     }
 
-    private Label Info(string text) => new()
+    /// <summary>Пояснительный блок: мягкая подложка со значком «i» — как info-плашка.</summary>
+    private Control Info(string text)
     {
-        Text = text, AutoSize = true, Font = _ui, ForeColor = TextMuted,
-        Margin = new Padding(0, 6, 0, 6), MaximumSize = new Size(760, 0),
-    };
+        var panel = new Panel { AutoSize = true, BackColor = PanelBg, Margin = new Padding(0, 4, 0, 6), Padding = new Padding(14, 11, 16, 12) };
+        panel.Paint += (_, e) =>
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            var r = new Rectangle(0, 0, panel.Width - 1, panel.Height - 1);
+            using var path = RoundedRect(r, 9);
+            using var fill = new SolidBrush(SurfaceAlt);
+            g.FillPath(fill, path);
+            using var bar = new SolidBrush(Accent);
+            g.FillRectangle(bar, 0, 6, 3, panel.Height - 12);   // акцентная грань слева
+        };
+        panel.Controls.Add(new Label
+        {
+            Text = text, AutoSize = true, Font = _ui, ForeColor = TextDark,
+            MaximumSize = new Size(780, 0), BackColor = Color.Transparent,
+        });
+        return panel;
+    }
 
     private void Msg(string text, MessageBoxIcon icon = MessageBoxIcon.Information)
     {
