@@ -6,7 +6,7 @@
   должны совпадать с собранной DLL.
 -->
 <RengaPlugin>
-  <Name>RengaHeat — гидравлический расчёт отопления</Name>
+  <Name>RengaHeat — расчёты ОВИК (отопление и вентиляция)</Name>
   <!-- Renga требует версию из двух чисел (X.Y). Трёхчастный формат (0.1.0) отбраковывается. -->
   <Version>1.0</Version>
   <RequiredAPIVersion>2.48</RequiredAPIVersion>

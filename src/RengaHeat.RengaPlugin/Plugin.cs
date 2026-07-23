@@ -38,8 +38,8 @@ public sealed class Plugin : Renga.IPlugin
 
             var ui = _application.UI;
             var action = ui.CreateAction();
-            action.DisplayName = "Гидравлический расчёт отопления";
-            action.ToolTip = "RengaHeat: анализ сети, расчёт, подбор и предпросмотр изменений";
+            action.DisplayName = "Расчёты ОВИК (отопление, вентиляция)";
+            action.ToolTip = "RengaHeat: расчёты ОВИК — отопление (гидравлика) и вентиляция; анализ сети, подбор, предпросмотр изменений";
 
             var events = new Renga.ActionEventSource(action);
             events.Triggered += (_, _) => RunCalculation();
@@ -94,7 +94,7 @@ public sealed class Plugin : Renga.IPlugin
             if (!_application.HasProject())
             {
                 _application.UI.ShowMessageBox(Renga.MessageIcon.MessageIcon_Warning, "RengaHeat",
-                    "Откройте проект Renga с системой отопления перед запуском плагина.");
+                    "Откройте проект Renga с инженерными системами (отопление/вентиляция) перед запуском плагина.");
                 return;
             }
 
