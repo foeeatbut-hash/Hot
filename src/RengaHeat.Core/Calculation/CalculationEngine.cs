@@ -33,8 +33,14 @@ public sealed record SegmentResult(
     double LengthM, double LinearLossPa, double MinorLossPa, bool FlowReversed,
     double VelocityLimitMS = 0, double SpecificLossLimitPaM = 0,
     int? CurrentDn = null, int? RecommendedDn = null, string? RecommendedSeries = null,
-    double? RecommendedInnerDiameterM = null, bool SizingSatisfied = true)
+    double? RecommendedInnerDiameterM = null, bool SizingSatisfied = true,
+    double ReynoldsNumber = 0, double FrictionFactor = 0)
 {
+    /// <summary>Режим течения по числу Рейнольдса: ламинарный / переходный / турбулентный.</summary>
+    public string FlowRegime => ReynoldsNumber <= 0 ? "—"
+        : ReynoldsNumber < Hydraulics.Friction.LaminarReynoldsLimit ? "ламин."
+        : ReynoldsNumber < 4000 ? "перех." : "турб.";
+
     /// <summary>Скорость превышает лимит СП/профиля на этом участке.</summary>
     public bool VelocityExceeded => VelocityLimitMS > 0 && VelocityMS > VelocityLimitMS + 1e-6;
     /// <summary>Удельные потери превышают лимит профиля на этом участке.</summary>
@@ -133,11 +139,6 @@ public sealed class CalculationEngine(RequirementsProfile profile, CalculationSc
         var rho = Water.Density(tMean);
         var nu = Water.KinematicViscosity(tMean);
 
-        // Сопротивления ветвей R в ΔP = R·G·|G| (линейное трение + местные + арматура по Kv)
-        var resistiveBranches = network.Branches
-            .Select(b => new ResistiveBranch(b.Object.Id, b.FromNode, b.ToNode, BranchResistance(b, rho, nu)))
-            .ToList();
-
         // Приборы — ветви с фиксированным расходом (инжекция: из подающего узла в обратный).
         // Источник моделируется заземлением обоих его узлов (подача и обратка = 0):
         // подающая и обратная стороны — раздельные резистивные компоненты, у каждого свой опорный узел.
@@ -149,7 +150,7 @@ public sealed class CalculationEngine(RequirementsProfile profile, CalculationSc
         // граница ИТП, не связанная трассами с приборами) их там нет — это ошибка данных модели,
         // а не повод для аварийного завершения расчёта.
         var schemeNodes = new HashSet<string>(
-            resistiveBranches.SelectMany(b => new[] { b.FromNode, b.ToNode })
+            network.Branches.SelectMany(b => new[] { b.FromNode, b.ToNode })
                 .Concat(fixedFlows.SelectMany(f => new[] { f.FromNode, f.ToNode })));
         var references = new[] { network.SourceSupplyNode, network.SourceReturnNode };
         if (!references.All(schemeNodes.Contains))
@@ -160,10 +161,39 @@ public sealed class CalculationEngine(RequirementsProfile profile, CalculationSc
                 "в «Исходных»), либо назначьте другой источник в «Карте».", source.Id));
             return Failed(source, findings.ToArray());
         }
-        SolverResult solve;
+
+        // Внешняя итерация согласования λ с фактическими расходами (метод Пикара). Сопротивление
+        // ветви ΔP=R·G² собирается из λ(Re), а Re зависит от скорости → от искомого расхода.
+        // Решаем, пересчитываем R по фактам, повторяем до стабилизации расходов. Так ламинарный/
+        // переходный режим и выбранный сценарием метод λ учитываются точно (а не при фиксированной
+        // характерной скорости 0.5 м/с, как раньше — тот λ игнорировал реальный режим течения).
+        SolverResult solve = null!;
+        var flowGuess = network.Branches.ToDictionary(b => b.Object.Id, _ => 0.0);
+        var outerIterations = 0;
+        var outerConverged = network.Branches.Count == 0;
+        const int maxOuterIterations = 15;
+        const double outerToleranceKgS = 1e-5;
         try
         {
-            solve = new HydraulicSolver().Solve(resistiveBranches, fixedFlows, references);
+            do
+            {
+                var branches = network.Branches.Select(b => new ResistiveBranch(
+                        b.Object.Id, b.FromNode, b.ToNode,
+                        Friction.BranchQuadraticResistance(b.LengthM, b.InnerDiameterM, b.RoughnessM,
+                            b.ZetaSum, b.Kv, rho, nu, Math.Abs(flowGuess[b.Object.Id]), scenario.FrictionMethod)))
+                    .ToList();
+                solve = new HydraulicSolver().Solve(branches, fixedFlows, references);
+                var maxChange = 0.0;
+                foreach (var b in network.Branches)
+                {
+                    var g = solve.BranchFlows[b.Object.Id];
+                    maxChange = Math.Max(maxChange, Math.Abs(g - flowGuess[b.Object.Id]));
+                    flowGuess[b.Object.Id] = g;
+                }
+                outerIterations++;
+                if (outerIterations > 1 && maxChange < outerToleranceKgS) outerConverged = true;
+            }
+            while (!outerConverged && outerIterations < maxOuterIterations);
         }
         catch (Exception ex)
         {
@@ -179,9 +209,10 @@ public sealed class CalculationEngine(RequirementsProfile profile, CalculationSc
                 $"Схема источника «{source.Name}» распадается на {solve.AutoGroundedComponents + 1} " +
                 "гидравлически несвязанных частей (давления в островках условны). Соедините сеть: " +
                 "группа «Открытые концы сети» в «Карте» показывает места разрывов.", source.Id));
-        if (!solve.Converged)
+        if (!solve.Converged || !outerConverged)
             findings.Add(new Finding(FindingStatus.Warning, "CALC-002",
-                $"Гидравлический решатель не сошёлся за {solve.Iterations} итераций у источника «{source.Name}». " +
+                $"Гидравлический решатель не сошёлся у источника «{source.Name}» " +
+                $"(внутренних итераций {solve.Iterations}, внешних согласований λ {outerIterations}). " +
                 "Результат ориентировочный: проверьте связность и сопротивления.", source.Id));
 
         var segments = new List<SegmentResult>();
@@ -228,7 +259,7 @@ public sealed class CalculationEngine(RequirementsProfile profile, CalculationSc
 
             segments.Add(new SegmentResult(b.Object.Id, b.Object.Name, b.Object.Context.SystemName,
                 g, v, rPaM, b.LengthM, rPaM * b.LengthM, minor, g < 0,
-                vLimit, rLimit, curDn, recDn, recSeries, recD, sizeOk));
+                vLimit, rLimit, curDn, recDn, recSeries, recD, sizeOk, re, lambda));
 
             if (g < 0)
                 findings.Add(new Finding(FindingStatus.Assumption, "DIR-002",
@@ -277,7 +308,7 @@ public sealed class CalculationEngine(RequirementsProfile profile, CalculationSc
         {
             SourceId = source.Id,
             SourceName = source.Name,
-            Converged = solve.Converged,
+            Converged = solve.Converged && outerConverged,
             Iterations = solve.Iterations,
             TotalFlowKgS = network.TotalFlowKgS,
             RequiredHeadPa = requiredHead,
@@ -289,19 +320,6 @@ public sealed class CalculationEngine(RequirementsProfile profile, CalculationSc
         result.Balancing.AddRange(balancing);
         result.Findings.AddRange(findings);
         return result;
-    }
-
-    private static double BranchResistance(BranchDescriptor b, double rho, double nu)
-    {
-        // ΔP = R·G² (G в кг/с). R собираем из геометрии: линейная + местная + арматура (Kv).
-        var area = Math.PI * b.InnerDiameterM * b.InnerDiameterM / 4;
-        var re = Friction.Reynolds(0.5, b.InnerDiameterM, nu); // λ при характерной скорости; уточняется по факту
-        var lambda = Friction.FrictionFactor(FrictionMethod.Churchill, re, b.RoughnessM / b.InnerDiameterM);
-        var linearR = lambda * b.LengthM / b.InnerDiameterM / (2 * rho * area * area);
-        var minorR = b.ZetaSum / (2 * rho * area * area);
-        // ΔP[Па] = (Q[м³/ч]/Kv)²·1e5; Q = G/ρ·3600 ⇒ R = (3600/(ρ·Kv))²·1e5
-        var valveR = b.Kv is { } kv && kv > 0 ? Math.Pow(3600.0 / (rho * kv), 2) * 1e5 : 0;
-        return Math.Max(linearR + minorR + valveR, 1e-6);
     }
 
     private static CalculationResult Failed(NetworkObject source, params Finding[] findings)

@@ -30,6 +30,19 @@ public class SessionTests
     }
 
     [Fact]
+    public void Segments_ReportReynoldsAndRegime_AfterLambdaConsistency()
+    {
+        var outcome = Run(TestScenarios.TwoPipeDeadEnd(3));
+        var segs = outcome.Results[0].Segments;
+        // После согласования λ с фактическими расходами число Рейнольдса и λ проставлены,
+        // режим течения определён (не «—») хотя бы у одного участка с расходом.
+        var withFlow = segs.First(s => Math.Abs(s.MassFlowKgS) > 1e-9);
+        Assert.True(withFlow.ReynoldsNumber > 0);
+        Assert.InRange(withFlow.FrictionFactor, 0.008, 0.2);
+        Assert.NotEqual("—", withFlow.FlowRegime);
+    }
+
+    [Fact]
     public void Calculation_ProducesRecommendedDiameters_AndSpLimits()
     {
         var outcome = Run(TestScenarios.TwoPipeDeadEnd(3));

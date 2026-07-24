@@ -112,6 +112,49 @@ public class HydraulicsTests
     }
 
     [Fact]
+    public void BranchResistance_LaminarRegime_GivesLinearPressureDrop()
+    {
+        // Малый диаметр + малый расход → ламинарный режим (λ=64/Re ∝ 1/v). Тогда ΔP=R·G²
+        // должно быть ЛИНЕЙНО по расходу, а не квадратично — это и есть эффект согласования λ
+        // с фактическим расходом (раньше λ замораживался на 0.5 м/с и режим игнорировался).
+        double d = 0.006, L = 10, rough = 1e-6, zeta = 0;
+        var rho = Water.Density(70);
+        var nu = Water.KinematicViscosity(70);
+        double g1 = 0.002, g2 = 0.004;
+
+        // Обе точки должны быть в ламинарном режиме, иначе тест бессмыслен.
+        var reHi = Friction.Reynolds(Friction.Velocity(g2, rho, d), d, nu);
+        Assert.True(reHi < Friction.LaminarReynoldsLimit, $"ожидался ламинарный режим, Re={reHi:0}");
+
+        var r1 = Friction.BranchQuadraticResistance(L, d, rough, zeta, null, rho, nu, g1, FrictionMethod.Churchill);
+        var r2 = Friction.BranchQuadraticResistance(L, d, rough, zeta, null, rho, nu, g2, FrictionMethod.Churchill);
+        var dp1 = r1 * g1 * g1;
+        var dp2 = r2 * g2 * g2;
+        // Удвоение расхода → примерно удвоение ΔP (линейно), а не вчетверо (квадратично).
+        Assert.InRange(dp2 / dp1, 1.85, 2.2);
+    }
+
+    [Fact]
+    public void BranchResistance_TurbulentRegime_GivesNearQuadraticPressureDrop()
+    {
+        // Больший диаметр и расход → турбулентный режим: λ меняется слабо, ΔP≈R·G² ~ квадратично.
+        double d = 0.02, L = 10, rough = 0.0002, zeta = 0;
+        var rho = Water.Density(70);
+        var nu = Water.KinematicViscosity(70);
+        double g1 = 0.3, g2 = 0.6;
+
+        var reLo = Friction.Reynolds(Friction.Velocity(g1, rho, d), d, nu);
+        Assert.True(reLo > 4000, $"ожидался турбулентный режим, Re={reLo:0}");
+
+        var r1 = Friction.BranchQuadraticResistance(L, d, rough, zeta, null, rho, nu, g1, FrictionMethod.Churchill);
+        var r2 = Friction.BranchQuadraticResistance(L, d, rough, zeta, null, rho, nu, g2, FrictionMethod.Churchill);
+        var dp1 = r1 * g1 * g1;
+        var dp2 = r2 * g2 * g2;
+        // Удвоение расхода → рост ΔP близко к четырёхкратному (λ чуть падает с Re).
+        Assert.InRange(dp2 / dp1, 3.5, 4.1);
+    }
+
+    [Fact]
     public void Solver_AutoGroundsIsolatedComponents_InsteadOfThrowing()
     {
         // Два гидравлически несвязанных островка; опорный узел есть только в первом.

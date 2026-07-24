@@ -41,7 +41,7 @@ public sealed class MainForm : Form
 
     // Видимый штамп версии плагина. Увеличивайте при каждом изменении UI — по нему сразу
     // видно в заголовке окна, свежая DLL загружена или старая.
-    private const string Build = "сборка 22";
+    private const string Build = "сборка 23";
 
     private readonly Font _ui = new("Segoe UI", 9f);
     private readonly Font _uiBold = new("Segoe UI", 9f, FontStyle.Bold);
@@ -1511,6 +1511,8 @@ public sealed class MainForm : Form
             segTable.Columns.Add("Участок");
             segTable.Columns.Add("Расход, кг/ч");
             segTable.Columns.Add("Скорость, м/с");
+            segTable.Columns.Add("Re");
+            segTable.Columns.Add("Режим");
             segTable.Columns.Add("Лимит v");
             segTable.Columns.Add("Уд.потери, Па/м");
             segTable.Columns.Add("Лимит R");
@@ -1521,6 +1523,7 @@ public sealed class MainForm : Form
             segTable.Columns.Add("ObjectId");
             foreach (var s in r.Segments)
                 segTable.Rows.Add(s.ObjectName, $"{s.MassFlowKgS * 3600:0.0}", $"{s.VelocityMS:0.000}",
+                    s.ReynoldsNumber > 0 ? $"{s.ReynoldsNumber:0}" : "", s.FlowRegime,
                     s.VelocityLimitMS > 0 ? $"{s.VelocityLimitMS:0.##}" : "", $"{s.SpecificLossPaM:0}",
                     s.SpecificLossLimitPaM > 0 ? $"{s.SpecificLossLimitPaM:0}" : "",
                     s.CurrentDn?.ToString() ?? "", s.RecommendedDn?.ToString() ?? "", s.RecommendedSeries ?? "",

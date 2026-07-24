@@ -65,6 +65,28 @@ public static class Friction
         zetaSum * density * velocityMS * velocityMS / 2;
 
     /// <summary>
+    /// Квадратичное сопротивление ветви R для модели решателя ΔP = R·G·|G| (G — массовый расход, кг/с):
+    /// линейное трение (Дарси–Вейсбах) + местные (Σζ) + арматура (Kv), приведённые к G².
+    /// λ вычисляется по ФАКТИЧЕСКОМУ расходу (внешняя итерация согласования): при G≈0 берётся
+    /// характерная скорость 0.5 м/с, чтобы λ и R не вырождались. В ламинарном режиме λ=64/Re ∝ 1/v,
+    /// поэтому R ∝ 1/G и ΔP=R·G² становится линейным по расходу — как и требует физика.
+    /// </summary>
+    public static double BranchQuadraticResistance(
+        double lengthM, double innerDiameterM, double roughnessM, double zetaSum, double? kv,
+        double density, double kinematicViscosity, double massFlowKgS, FrictionMethod method)
+    {
+        var area = Math.PI * innerDiameterM * innerDiameterM / 4;
+        var v = massFlowKgS > 1e-9 ? massFlowKgS / (density * area) : 0.5;
+        var re = Reynolds(v, innerDiameterM, kinematicViscosity);
+        var lambda = FrictionFactor(method, re, roughnessM / innerDiameterM);
+        var linearR = lambda * lengthM / innerDiameterM / (2 * density * area * area);
+        var minorR = zetaSum / (2 * density * area * area);
+        // ΔP[Па]=(Q[м³/ч]/Kv)²·1e5, Q=G/ρ·3600 ⇒ R_Kv=(3600/(ρ·Kv))²·1e5.
+        var valveR = kv is { } k && k > 0 ? Math.Pow(3600.0 / (density * k), 2) * 1e5 : 0;
+        return Math.Max(linearR + minorR + valveR, 1e-6);
+    }
+
+    /// <summary>
     /// Потери на арматуре по пропускной способности: ΔP[бар] = (Q[м³/ч] / Kv)², результат в Па.
     /// </summary>
     public static double KvPressureDrop(double volumeFlowM3H, double kv)
